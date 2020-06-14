@@ -1,20 +1,142 @@
-import { Component, OnInit } from '@angular/core';
-import { HeaderService } from '@estimator/services';
+import { BrowserModule } from '@angular/platform-browser';
+import { NgModule } from '@angular/core';
+import { NgSelectModule } from '@ng-select/ng-select';
+import { MatAutocompleteModule } from '@angular/material/autocomplete';
+import { MatButtonModule } from '@angular/material/button';
+import { MatCardModule } from '@angular/material/card';
+import { MatCheckboxModule } from '@angular/material/checkbox';
+import { MatChipsModule } from '@angular/material/chips';
+import { MatNativeDateModule } from '@angular/material/core';
+import { MatDatepickerModule } from '@angular/material/datepicker';
+import { MatDialogModule } from '@angular/material/dialog';
+import { MatIconModule } from '@angular/material/icon';
+import { MatInputModule } from '@angular/material/input';
+import { MatMenuModule } from '@angular/material/menu';
+import { MatPaginatorModule } from '@angular/material/paginator';
+import { MatSidenavModule } from '@angular/material/sidenav';
+import { MatSliderModule } from '@angular/material/slider';
+import { MatSnackBarModule } from '@angular/material/snack-bar';
+import { MatSortModule } from '@angular/material/sort';
+import { MatTableModule } from '@angular/material/table';
+import { MatTabsModule } from '@angular/material/tabs';
+import { MatToolbarModule } from '@angular/material/toolbar';
+import { MatTooltipModule } from '@angular/material/tooltip';
 
-@Component({
-  selector: 'app-root',
-  templateUrl: './app.component.html',
-  styleUrls: ['./app.component.css'],
+import { DragDropModule } from '@angular/cdk/drag-drop';
+import { FileUploadModule } from 'primeng/fileupload';
+import { NgOptionHighlightModule } from '@ng-select/ng-option-highlight';
+import { NgGanttEditorModule } from 'ng-gantt';
+import { MatBadgeModule } from '@angular/material/badge';
+import { FormsModule, ReactiveFormsModule } from '@angular/forms';
+import { HttpClientModule } from '@angular/common/http';
+import { AppRoutingModule } from './app-routing.module';
+import { AppComponent } from './app.component';
+import { BrowserAnimationsModule } from '@angular/platform-browser/animations';
+import {
+  AboutComponent, ContactComponent, DashboardComponent, DashboardStatisticComponent,
+  EstimatorTableComponent, HomeComponent, LegalComponent, LoginComponent, MembersComponent,
+  NotFoundComponent, PrivacyComponent, RegistrationComponent, AppHeaderComponent,
+  RegistrationDialogComponent, SupportComponent, TermsComponent, EstimateChartComponent, AlertComponent, ProfileComponent,
+  ProjectSettingsComponent, ProjectSettingsViewComponent, DeleteInviteComponent, DashboardProjectStatisticComponent,
+  ForgotPasswordComponent, ForgotPasswordResetComponent, InvitePasswordSetComponent, InputFilterComponent
+} from '@estimator/components';
+import { NgxChartsModule } from '@swimlane/ngx-charts';
+import { DashboardService, HeaderService } from '@estimator/services';
+import { ClickOutsideModule } from 'ng-click-outside';
+import { ImageCropperModule } from 'ngx-image-cropper';
+import { MatTableExporterModule } from 'mat-table-exporter';
+import { StoreModule } from '@ngrx/store';
+import { appReducers } from './store/reducers/app.reducers';
+import { LinkifyPipe } from '@estimator/pipes';
+
+@NgModule({
+  declarations: [
+    AppComponent,
+    LoginComponent,
+    HomeComponent,
+    DashboardComponent,
+    RegistrationComponent,
+    PrivacyComponent,
+    LegalComponent,
+    ContactComponent,
+    RegistrationDialogComponent,
+    TermsComponent,
+    SupportComponent,
+    AlertComponent,
+    NotFoundComponent,
+    AboutComponent,
+    EstimatorTableComponent,
+    EstimateChartComponent,
+    ProfileComponent,
+    AppHeaderComponent,
+    MembersComponent,
+    DashboardStatisticComponent,
+    ProjectSettingsComponent,
+    ProjectSettingsViewComponent,
+    DeleteInviteComponent,
+    DashboardProjectStatisticComponent,
+    ForgotPasswordComponent,
+    ForgotPasswordResetComponent,
+    LinkifyPipe,
+    InvitePasswordSetComponent,
+    InputFilterComponent
+  ],
+  entryComponents: [RegistrationDialogComponent, AlertComponent],
+  imports: [
+    BrowserAnimationsModule,
+    BrowserModule,
+    MatTableExporterModule,
+    AppRoutingModule,
+    FormsModule,
+    HttpClientModule,
+    MatIconModule,
+    MatInputModule,
+    NgSelectModule,
+    MatTabsModule,
+    MatToolbarModule,
+    MatAutocompleteModule,
+    MatDialogModule,
+    MatTooltipModule,
+    MatButtonModule,
+    NgOptionHighlightModule,
+    MatChipsModule,
+    MatTooltipModule,
+    MatSnackBarModule,
+    MatCheckboxModule,
+    MatSortModule,
+    MatTableModule,
+    MatMenuModule,
+    MatCardModule,
+    MatSliderModule,
+    MatTabsModule,
+    MatPaginatorModule,
+    NgxChartsModule,
+    MatSidenavModule,
+    FormsModule,
+    MatDialogModule,
+    MatDatepickerModule,
+    MatNativeDateModule,
+    FileUploadModule,
+    ReactiveFormsModule,
+    NgGanttEditorModule,
+    NgSelectModule,
+    ClickOutsideModule,
+    MatBadgeModule,
+    DragDropModule,
+    ImageCropperModule,
+    StoreModule.forRoot(appReducers, {
+      runtimeChecks: {
+        strictStateImmutability: true,
+        strictActionImmutability: true
+      }
+    })
+  ],
+  providers: [
+    DashboardService,
+    HeaderService
+  ],
+  bootstrap: [AppComponent]
 })
-export class AppComponent implements OnInit {
-  constructor(private headerService: HeaderService) { }
-  title = 'frontend';
-  isShowHeader = true;
+export class AppModule {
 
-  ngOnInit() {
-    this.isShowHeader = this.headerService.getHeaderStatus();
-    this.headerService.toggleNavbarEvent.subscribe((showHeader: boolean) => {
-      this.isShowHeader = showHeader;
-    });
-  }
 }
