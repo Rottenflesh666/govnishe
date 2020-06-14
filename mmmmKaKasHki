@@ -1,14 +1,23 @@
-const express = require('express');
-const bodyParser = require('body-parser');
+const config = require('config');
+const Sequelize = require('sequelize');
 
-const app = express();
+const dbConfig = config.get('Estimator.dbConfig');
 
-app.use(bodyParser.json({ limit: '10mb', extended: true }));
-app.use(bodyParser.urlencoded({ limit: '10mb', extended: true }));
-app.use(express.static('public'));
-
-require('./routes/index')(app);
-
-app.listen(3000, () => {
-  console.log('listening on port 3000');
+const sequelize = new Sequelize(`postgres://${dbConfig.user}:${dbConfig.password}@${dbConfig.host}:${dbConfig.port}/${dbConfig.database}`, {
+  dialect: 'postgres',
 });
+
+console.log(`NODE_ENV: ${config.util.getEnv('NODE_ENV')}`);
+console.log(`SUPPRESS_NO_CONFIG_WARNING: ${config.util.getEnv('SUPPRESS_NO_CONFIG_WARNING')}`);
+console.log(config.get('Estimator.dbConfig'));
+
+sequelize
+  .authenticate()
+  .then(() => {
+    console.log('Connection has been established successfully.');
+  })
+  .catch((err) => {
+    console.error('Unable to connect to the database:', err);
+  });
+
+module.exports = sequelize;
