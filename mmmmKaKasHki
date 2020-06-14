@@ -1,0 +1,20 @@
+import { Component, OnInit } from '@angular/core';
+import { HeaderService } from '@estimator/services';
+
+@Component({
+  selector: 'app-root',
+  templateUrl: './app.component.html',
+  styleUrls: ['./app.component.css'],
+})
+export class AppComponent implements OnInit {
+  constructor(private headerService: HeaderService) { }
+  title = 'frontend';
+  isShowHeader = true;
+
+  ngOnInit() {
+    this.isShowHeader = this.headerService.getHeaderStatus();
+    this.headerService.toggleNavbarEvent.subscribe((showHeader: boolean) => {
+      this.isShowHeader = showHeader;
+    });
+  }
+}
