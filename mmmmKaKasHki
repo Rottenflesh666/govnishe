@@ -1,151 +1,462 @@
-const jwt = require('jsonwebtoken');
-const User = require('../models').user;
-const Role = require('../models').role;
-const Task = require('../models').task;
-const UserProject = require('../models').userProject;
-const Project = require('../models').project;
-const Image = require('../models').image;
+import { Component, OnInit, OnDestroy } from '@angular/core';
+import { AlertComponent } from '../alert/alert.component';
+import {
+  ProjectSettingsService, EstimatorTableService,
+  Patterns, UsersInProjectService, RolesService, SharedService, GetCountTaskFields, MilestonesService
+} from '@estimator/services';
+import { ActivatedRoute, Router } from '@angular/router';
+import {
+  ProjectCore, ProjectStatus, Roles, Milestone,
+  Note, Task, MemberWithRoleInfo,
+  DefaultServerMessage, MilestoneStatus, MilestoneWithStatusModel,
+  TaskAndBlockerList, InviteUserInProject
+} from '@estimator/models';
+import { SelectionModel } from '@angular/cdk/collections';
+import { MatDialog } from '@angular/material/dialog';
+import { MatSnackBar } from '@angular/material/snack-bar';
+import { NgForm, FormControl } from '@angular/forms';
+import { DatePipe } from '@angular/common';
+import { Subscription } from 'rxjs';
+import { Store, select } from '@ngrx/store';
+import { IAppState } from 'src/app/store/state/app.state';
+import { selectActiveTab } from 'src/app/store/selectors/project-settings.selector';
+import { SetTab } from 'src/app/store/actions/project-settings.actions';
 
-exports.member_info_get = (req, res) => {
-  jwt.verify(req.params.idToken, res.jwtKey, (errDecode, decoded) => {
-    if (errDecode) throw errDecode;
-    const id = req.params.id;
-    User.findByPk(id, {
-      attributes: ['firstName', 'lastName', 'email'],
-      include: [{
-        model: Role,
-        attributes: ['roleName'],
-      }, {
-        model: Image,
-        attributes: ['image'],
-      }],
-    })
-      .then((user) => {
-        const resUser = user;
-        resUser.dataValues.image = user.image.image;
-        res.json(resUser);
-      })
-      .catch((err) => {
-        throw err;
-      });
-  });
-};
+@Component({
+  selector: 'app-project-settings',
+  templateUrl: './project-settings.component.html',
+  styleUrls: ['./project-settings.component.css'],
+  providers: [
+    ProjectSettingsService, EstimatorTableService, UsersInProjectService,
+    RolesService, DatePipe
+  ]
+})
+export class ProjectSettingsComponent implements OnInit, OnDestroy {
+  emailPattern = Patterns.emailPattern;
+  dataLoaded = false;
+  emailTaken = false;
+  projectId: number;
+  allTasks: Task[];
+  projectSettingsData: ProjectCore;
+  projectStatusList: ProjectStatus[] = [];
+  projectManagers: MemberWithRoleInfo[] = [];
+  currentProjectManagerId: number;
+  previousProjectManagerId: number;
+  currentProjectStatusId: number;
+  availableBlockers: Task[] = [];
 
-exports.check_user = (req, res) => {
-  const token = req.params.idToken;
-  const userId = req.params.userId;
-  jwt.verify(token, res.jwtKey, (errDecode, decoded) => {
-    if (errDecode) throw errDecode;
-    User.findByPk(userId, {
-      attributes: ['userId'],
-    })
-      .then((user) => {
-        if (!user) {
-          res.json({
-            error: true,
-            notFound: true,
-          })
-        } else if (decoded.subject === +userId) {
-          res.json({
-            error: false,
-            isActiveUser: true,
-          });
+  milestonesInfo: MilestoneWithStatusModel[] = [];
+  members: MemberWithRoleInfo[] = [];
+  blockers: TaskAndBlockerList[] = [];
+  notes: Note[] = [];
+
+  milestoneStatusesList: MilestoneStatus[] = [];
+  selectionMilestones = new SelectionModel<number>(true, []);
+  selectionBlockers = new SelectionModel<TaskAndBlockerList>(true, []);
+  selectionNotes = new SelectionModel<number>(true, []);
+  selectionMembers = new SelectionModel<number>(true, []);
+  displayedMilestonesColumns = ['select', 'name', 'status', 'hours'];
+  displayedMembersColumns = ['select', 'image', 'name', 'email', 'registerDate', 'confirmation', 'role'];
+  displayedNotesColumns = ['select', 'noteName', 'note'];
+  displayedTasksWithBlockersColumns = ['select', 'taskName', 'taskBlockerName'];
+
+  selected = new FormControl();
+  private activeTab$: Subscription;
+
+  constructor(
+    private projectSettingsService: ProjectSettingsService,
+    private usersInProjectService: UsersInProjectService,
+    private tableService: EstimatorTableService,
+    private route: ActivatedRoute,
+    private dialog: MatDialog,
+    private datePipe: DatePipe,
+    private roleService: RolesService,
+    private alert: MatSnackBar,
+    private router: Router,
+    private sharedService: SharedService,
+    private store: Store<IAppState>
+  ) { }
+
+  ngOnInit() {
+    this.subscribeToTabsChange();
+    this.projectId = +this.route.snapshot.paramMap.get('projectId');
+    this.selected.setValue(this.sharedService.activeTabProjectSettings);
+    this.projectSettingsService
+      .checkProjectExist(this.projectId)
+      .subscribe((answer: boolean) => {
+        if (answer) {
+          this.checkRole();
         } else {
-          res.json({
-            error: false,
-            isActiveUser: false,
-          });
+          this.router.navigateByUrl('not-found');
         }
-      })
-      .catch(() => {
-        res.json({
-          error: true,
-          tokenError: true,
+      });
+  }
+
+  private subscribeToTabsChange() {
+    this.activeTab$ = this.store.pipe(select(selectActiveTab))
+      .subscribe(activeTabIndex => {
+        this.selected.setValue(activeTabIndex);
+      });
+  }
+
+  selectedIndexChanged(index: number) {
+    this.store.dispatch(new SetTab(index));
+  }
+
+  checkRole() {
+    this.roleService
+      .getRoleName()
+      .subscribe((answer) => {
+        if (answer === Roles.admin || answer === Roles.projectManager) {
+          this.loadOnStart();
+        } else {
+          this.router.navigateByUrl('not-found');
+        }
+      });
+  }
+
+  loadOnStart() {
+    // Load project statuses
+    this.projectSettingsService
+      .getProjectStatuses(this.projectId)
+      .subscribe((projectStatusList: ProjectStatus[]) => {
+        this.projectStatusList = projectStatusList;
+      });
+    // Load all data about project
+    this.projectSettingsService
+      .getProjectInfo(this.projectId)
+      .subscribe((projectSettingsData: ProjectCore) => {
+        this.projectSettingsData = projectSettingsData;
+        this.currentProjectStatusId = projectSettingsData.projectStatusId;
+        this.dataLoaded = true;
+      });
+    // Load task to enable blockers creation
+    this.tableService
+      .getTasks(this.projectId)
+      .subscribe((tasks: Task[]) => {
+        this.allTasks = tasks;
+      });
+    this.loadMilestoneStatusesList();
+    this.loadMilestones();
+    this.loadBlockers();
+    this.loadNotes();
+    this.loadMembers();
+  }
+
+  loadNotes() {
+    this.projectSettingsService
+      .getProjectNotes(this.projectId)
+      .subscribe((notes: Note[]) => {
+        this.notes = notes;
+        this.selectionNotes = new SelectionModel<number>(true, []);
+      });
+  }
+
+  onAddNoteFormSubmit(form: NgForm) {
+    if (form.invalid) {
+      return;
+    }
+    const note: Note = {
+      noteId: null,
+      noteName: form.value.inputNoteName,
+      note: form.value.inputNoteText,
+      projectId: this.projectId
+    };
+
+    this.projectSettingsService
+      .addNote(note)
+      .subscribe((answer: DefaultServerMessage) => {
+        this.openAlert(answer.error ? answer.errorMessage : 'Note added successfully', answer.error, 2500);
+        if (!answer.error) {
+          this.loadNotes();
+          form.resetForm();
+        }
+      });
+  }
+
+  onDeleteNote() {
+    this.projectSettingsService
+      .deleteNotes(this.selectionNotes.selected)
+      .subscribe((answer: DefaultServerMessage) => {
+        this.openAlert(answer.error ? answer.errorMessage : 'Note(s) deleted successfully', answer.error, 2500);
+        if (!answer.error) {
+          this.loadNotes();
+        }
+      });
+  }
+
+  loadMembers() {
+    this.projectSettingsService
+      .getMembers(this.projectId)
+      .subscribe((members: MemberWithRoleInfo[]) => {
+        this.members = members;
+        this.projectManagers = [];
+        this.selectionMembers = new SelectionModel<number>(true, []);
+        this.currentProjectManagerId = this.projectSettingsData.currentProjectManagerId;
+        this.members.forEach((member) => {
+          if (member.role.roleName === Roles.projectManager) {
+            this.projectManagers.push(member);
+          }
         });
       });
-  });
+  }
+
+  loadBlockers() {
+    this.projectSettingsService
+      .getBlockers(this.projectId)
+      .subscribe((blockers: TaskAndBlockerList[]) => {
+        this.blockers = blockers;
+        this.selectionBlockers = new SelectionModel<TaskAndBlockerList>(true, []);
+      });
+  }
+
+  getTasksWithoutCurrentTask(currentTaskId: number) {
+    return this.allTasks.filter(task => task.taskId !== +currentTaskId);
+  }
+
+  getAlreadyIncludedBlockers(currentTaskId: number) {
+    const includedBlockers = [];
+    this.blockers.forEach((blocker) => {
+      if (blocker.taskId === +currentTaskId) {
+        includedBlockers.push(blocker.taskBlockerId);
+      }
+      if (blocker.taskBlockerId === +currentTaskId) {
+        includedBlockers.push(blocker.taskId);
+      }
+    });
+    return includedBlockers;
+  }
+
+
+  generateBlockers(selectedTaskId: number) {
+    this.availableBlockers = this.getTasksWithoutCurrentTask(selectedTaskId);
+    const existingBlockers = this.getAlreadyIncludedBlockers(selectedTaskId);
+    this.availableBlockers = this.availableBlockers.filter(task => !existingBlockers.includes(+task.taskId));
+  }
+
+  onSaveTaskBlocker(form: NgForm) {
+    if (form.invalid) {
+      return;
+    }
+    const taskWithBlocker: TaskAndBlockerList = {
+      taskId: form.value.inputSourceTask,
+      taskBlockerId: form.value.inputBlocker,
+      taskName: null,
+      taskBlockerName: null
+    };
+    this.projectSettingsService
+      .addBlockerToTask(taskWithBlocker)
+      .subscribe((answer: DefaultServerMessage) => {
+        this.openAlert(answer.error ? answer.errorMessage : 'Data updated successfully', answer.error, 2500);
+        if (!answer.error) {
+          this.loadBlockers();
+          form.resetForm();
+          this.availableBlockers = [];
+        }
+      });
+  }
+
+  onDeleteTaskBlockers() {
+    this.projectSettingsService
+      .deleteTaskBlockers(this.selectionBlockers.selected)
+      .subscribe((answer) => {
+        this.openAlert(answer.error ? answer.errorMessage : 'Blocker(s) deleted successfully', answer.error, 2500);
+        if (!answer.error) {
+          this.loadBlockers();
+        }
+      });
+  }
+
+  onDeleteMembers() {
+    const projectManagerId = this.selectionMembers.selected.find(id => id === this.currentProjectManagerId);
+    this.projectSettingsService
+      .deleteMembers(this.projectId, this.selectionMembers.selected, projectManagerId)
+      .subscribe((answer: DefaultServerMessage) => {
+        this.openAlert(answer.error ? answer.errorMessage : 'Deleted successfully', answer.error, 2500);
+        if (!answer.error) {
+          if (projectManagerId) {
+            this.projectSettingsData.currentProjectManagerId = null;
+          }
+          this.members = this.members.filter(member => !this.selectionMembers.selected.includes(member.userId));
+          this.selectionMembers = new SelectionModel<number>(true, []);
+        }
+      });
+  }
+
+  loadMilestones() {
+    this.projectSettingsService
+      .getMilestones(this.projectId)
+      .subscribe((milestones: MilestoneWithStatusModel[]) => {
+        this.milestonesInfo = milestones;
+        this.milestonesInfo.forEach((milestone, index, arr) => {
+          const hours = MilestonesService.getCountMilestoneTasks(milestone.tasks);
+          arr[index].hours = hours;
+        });
+        this.selectionMilestones = new SelectionModel<number>(true, []);
+      });
+  }
+
+  loadMilestoneStatusesList() {
+    this.projectSettingsService
+      .getMilestoneStatuses()
+      .subscribe((milestoneStatuses) => {
+        this.milestoneStatusesList = milestoneStatuses;
+      });
+  }
+
+  openDialog(templateRef) {
+    this.dialog.open(templateRef, {
+      width: '400px',
+    });
+  }
+
+  onAddUserToProjectFormSubmit(form: NgForm) {
+    if (form.invalid) {
+      return;
+    }
+    const inviterTokenId = localStorage.getItem('token');
+    const inviteUserBody: InviteUserInProject = {
+      inviterTokenId,
+      email: form.value.inputEmail,
+      projectId: this.projectId,
+      createdDate: this.datePipe.transform(new Date(), 'yyyy-MM-dd'),
+      projectName: this.projectSettingsData.projectName
+    };
+
+    this.usersInProjectService
+      .checkUserEmail(inviteUserBody)
+      .subscribe((answer: DefaultServerMessage) => {
+        this.openAlert(answer.error ? answer.errorMessage : 'User was invited', answer.error, 2500);
+        if (!answer.error) {
+          this.loadMembers();
+        }
+      });
+  }
+
+  openAlert(message: string, isError: boolean, duration: number) {
+    this.alert.openFromComponent(AlertComponent, {
+      duration,
+      panelClass: isError ? ['alert-danger'] : ['alert-success'],
+      data: {
+        isError,
+        message
+      }
+    });
+  }
+
+  onSaveProjectInfo(form: NgForm) {
+    if (form.invalid) {
+      return;
+    }
+    const updateProjectBody: ProjectCore = {
+      projectId: this.projectId,
+      description: form.value.inputDescription,
+      projectName: form.value.inputProjectTitle,
+      projectStatusId: form.value.inputStatus,
+      currentProjectManagerId: +form.value.selectProjectManagerId,
+      url: form.value.inputUrl
+    };
+
+    this.projectSettingsService
+      .updateProjectInfo(updateProjectBody)
+      .subscribe((answer: DefaultServerMessage) => {
+        this.openAlert(answer.error ? answer.errorMessage : 'Data updated successfully', answer.error, 2500);
+        if (!answer.error) {
+          this.projectSettingsData.projectName = form.value.inputProjectTitle;
+          this.projectSettingsData.currentProjectManagerId = +form.value.selectProjectManagerId;
+        }
+      });
+  }
+
+  onAddMilestoneFormSubmit(form: NgForm) {
+    if (form.invalid) {
+      return;
+    }
+    const newMilestone: Milestone = {
+      id: null,
+      name: form.value.inputMilestoneName,
+      projectId: this.projectId,
+      milestoneStatusId: form.value.selectMilestoneStatus
+    };
+
+    this.projectSettingsService
+      .addMilestoneToProject(newMilestone)
+      .subscribe((answer: DefaultServerMessage) => {
+        this.openAlert(answer.error ? answer.errorMessage : 'Milestone added successfully', answer.error, 2500);
+        if (!answer.error) {
+          this.loadMilestones();
+          form.resetForm();
+        }
+      });
+  }
+
+  onDeleteMilestones() {
+    this.projectSettingsService
+      .deleteMilestones(this.selectionMilestones.selected)
+      .subscribe((answer: DefaultServerMessage) => {
+        this.openAlert(answer.error ? answer.errorMessage : 'Milestone(s) deleted successfully', answer.error, 2500);
+        if (!answer.error) {
+          this.loadMilestones();
+        }
+      });
+  }
+
+  onViewLink() {
+    this.sharedService.activeTabProjectSettings = this.selected.value;
+    this.router.navigateByUrl(`project-settings/view/${this.projectId}`);
+  }
+
+  // Get project description or return notification if not exist
+  viewGetRrojectDescription() {
+    const description = this.projectSettingsData.description;
+    return description || '';
+  }
+
+  // Get current project status
+  viewGetProjectStatus() {
+    const projectStatusId = this.projectSettingsData.projectStatusId;
+    return this.projectStatusList.find(status => status.projectStatusId === projectStatusId).projectStatusName;
+  }
+
+  // Get current project status id
+  getProjectStatusId() {
+    return this.projectSettingsData.projectStatusId;
+  }
+
+  // Get project name
+  viewGetProjectName() {
+    return this.projectSettingsData.projectName;
+  }
+
+  // Get start date
+  viewGetStartDate() {
+    return this.projectSettingsData.startDate || 'Counted tasks required';
+  }
+
+  // Get project url
+  viewGetUrl() {
+    return this.projectSettingsData.url || '';
+  }
+
+  // Get end date
+  viewGetEndDate() {
+    return this.projectSettingsData.endDate || 'Counted tasks required';
+  }
+
+  // Used for select/deselect mat-checkbox
+  checkboxLabelMilestones(row?: Milestone): string {
+    return `${this.selectionMilestones.isSelected(row.id) ? 'deselect' : 'select'} row `;
+  }
+
+  checkboxLabelBlockers(row?: TaskAndBlockerList): string {
+    return `${this.selectionBlockers.isSelected(row) ? 'deselect' : 'select'} row `;
+  }
+
+  checkboxLabelNotes(row?: Note): string {
+    return `${this.selectionNotes.isSelected(row.noteId) ? 'deselect' : 'select'} row `;
+  }
+
+  ngOnDestroy() {
+    this.activeTab$.unsubscribe();
+  }
 }
-
-exports.edit_user = (req, res) => {
-  
-}
-
-exports.tasks_get = (req, res) => {
-  jwt.verify(req.params.idToken, res.jwtKey, (errDecode, decoded) => {
-    if (errDecode) throw errDecode;
-    const id = req.params.id;
-    Task.findAll({
-      where: {
-        assignedId: id,
-      },
-      attributes: [
-        'taskId',
-        'taskName',
-        'dateStart',
-        'endStart',
-        'optimisticTime',
-        'pessimisticTime',
-        'completed',
-      ],
-      include: {
-        model: Project,
-        as: 'project',
-      },
-    })
-      .then((tasks) => {
-        res.json(tasks);
-      })
-      .catch((err) => {
-        throw err;
-      });
-  });
-};
-
-exports.set_profile_avatar_put = (req, res) => {
-  jwt.verify(req.params.idToken, res.jwtKey, (errDecode, decoded) => {
-    if (errDecode) throw errDecode;
-    const id = req.params.id;
-    Image.update({
-      image: req.body.file,
-    }, {
-      where: {
-        userId: id,
-      },
-    })
-      .then(() => {
-        res.json({
-          error: false,
-        });
-      })
-      .catch((err) => {
-        res.json({
-          error: true,
-          errorMessage: err.message,
-        });
-      });
-  });
-};
-
-exports.projects_count_get = (req, res) => {
-  jwt.verify(req.params.idToken, res.jwtKey, (errDecode, decoded) => {
-    if (errDecode) throw errDecode;
-    const id = req.params.id;
-    UserProject.count({
-      attributes: [],
-      where: {
-        userId: id,
-        '$project.deleted$': false,
-      },
-      include: {
-        model: Project,
-        attributes: [],
-      },
-    })
-      .then((count) => {
-        res.json(count);
-      })
-      .catch((err) => {
-        throw err.message;
-      });
-  });
-};
