@@ -1,157 +1,316 @@
-import { Component, OnInit, ViewChild, ElementRef } from '@angular/core';
-import { FormBuilder } from '@angular/forms';
-import { GanttEditorComponent, GanttEditorOptions } from 'ng-gantt';
-import { EstimatorTableService, EstimateChartService, RolesService, GetCountTaskFields } from '@estimator/services';
-import { ActivatedRoute } from '@angular/router';
-import { Task, ProjectDropdown, Roles } from '@estimator/models';
+import { Component, ElementRef, AfterViewInit, OnDestroy, OnInit, ViewChild } from '@angular/core';
+import { ActivatedRoute, Router } from '@angular/router';
+import { ProfileService, GetCountTaskFields, SharedService, EstimatorTableService, AuthServiceJwt } from '@estimator/services';
+import { MemberWithRoleInfo, Task, DisplayedTasks, EditTaskModel, DefaultServerMessage, ProfileCheck } from '@estimator/models';
+import { MatDialog } from '@angular/material/dialog';
+import { MatPaginator } from '@angular/material/paginator';
+import { MatSnackBar } from '@angular/material/snack-bar';
+import { MatSort } from '@angular/material/sort';
+import { MatTableDataSource } from '@angular/material/table';
+import { AlertComponent } from '../alert/alert.component';
 import { DatePipe } from '@angular/common';
-import html2canvas from 'html2canvas';
-import * as jspdf from 'jspdf';
+import { ImageCroppedEvent } from 'ngx-image-cropper';
+import { FormControl } from '@angular/forms';
 
 @Component({
-  selector: 'app-estimate-chart',
-  templateUrl: './estimate-chart.component.html',
-  styleUrls: ['./estimate-chart.component.css'],
-  providers: [EstimatorTableService, EstimateChartService, RolesService, DatePipe]
+  selector: 'app-profile',
+  templateUrl: './profile.component.html',
+  styleUrls: ['./profile.component.css'],
+  providers: [EstimatorTableService, ProfileService, DatePipe, AuthServiceJwt]
 })
-export class EstimateChartComponent implements OnInit {
-  @ViewChild('editor', { static: false }) editor: GanttEditorComponent;
-  @ViewChild('gantt', { static: false }) gantt: ElementRef;
-  public editorOptions: GanttEditorOptions;
-  public data: any;
-  projectId: number;
-  export = false;
-  selected = false;
-  availableWorkingHours: number;
-  noDevelopersOnProject = false;
-  projectsDropdown: ProjectDropdown[] = [];
-  hidden = true;
+export class ProfileComponent implements OnInit, AfterViewInit, OnDestroy {
+  userId: number;
+  memberInfo: MemberWithRoleInfo;
+  tasksForTodayCount = 0;
+  myProjectsCount = 0;
+  headerTasksInfoLoaded = false;
+  currentRowIndex: number;
+  currentPercentValue = 0;
+  uploadActivated = false;
+  currentDate: string;
+  imageChangedEvent: any = '';
+  croppedImage: any = '';
+  mainUserInfoEditActive = false;
+  memberInfoLoaded = false;
+  totalTasksLoaded = false;
+  isProfileOwner = true;
+  newTasksLoaded = false;
+  tasksInProgressLoaded = false;
+  tempFirstName: string;
+  tempLastName: string;
+  firstName = new FormControl('');
+  lastName = new FormControl('');
+  totalTasks: MatTableDataSource<DisplayedTasks>;
+  newTasks: MatTableDataSource<DisplayedTasks>;
+  tasksInProgress: MatTableDataSource<DisplayedTasks>;
+  displayedColumns = ['projectName', 'taskName', 'dateStart', 'pert', 'completed'];
+  @ViewChild(MatPaginator, { static: true }) pagTotal: MatPaginator;
+  @ViewChild('sortTotal', { static: true }) sortTotal: MatSort;
+  @ViewChild('sortNew', { static: true }) sortNew: MatSort;
+  @ViewChild('sortProgress', { static: true }) sortProgress: MatSort;
   constructor(
-    public fb: FormBuilder,
-    private tableService: EstimatorTableService,
+    private elementRef: ElementRef,
     private route: ActivatedRoute,
-    private roleService: RolesService,
-    private datePipe: DatePipe,
-    private chartService: EstimateChartService) {
+    private router: Router,
+    private sharedService: SharedService,
+    private dialog: MatDialog,
+    private profileService: ProfileService,
+    private tableService: EstimatorTableService,
+    private alert: MatSnackBar,
+    private authService: AuthServiceJwt,
+    private datePipe: DatePipe
+  ) {
   }
 
   ngOnInit() {
-    this.projectId = +this.route.snapshot.paramMap.get('projectId');
-    this.export = !!this.route.snapshot.paramMap.get('export');
+    this.userId = +this.route.snapshot.paramMap.get('id');
     const token = localStorage.getItem('token');
-    this.roleService
-      .getRoleName()
+    this.profileService
+      .checkUser(token, this.userId)
+      .subscribe((answer: ProfileCheck) => {
+        if (answer.tokenError) {
+          this.authService.logout();
+        }
+        if (answer.notFound) {
+          this.router.navigateByUrl('not-found');
+        }
+        this.isProfileOwner = answer.isActiveUser;
+        console.log(this.isProfileOwner);
+        this.currentDate = this.datePipe.transform(new Date(), 'yyyy/MM/dd');
+        this.loadCoreMemberInfo();
+        this.loadTasks();
+      });
+  }
+
+  editModeHandler(value: boolean) {
+    this.mainUserInfoEditActive = value;
+  }
+
+  activateEditMode(){
+    this.tempFirstName= this.firstName.value;
+    this.tempLastName= this.lastName.value;
+    this.editModeHandler(true);
+  }
+
+  cancelEditMode(){
+    this.firstName.setValue(this.tempFirstName);
+    this.lastName.setValue(this.tempLastName);
+    this.editModeHandler(false);
+  }
+
+  saveEditInfo(){
+    if(!this.firstName.value.length || !this.lastName.value.length){
+      return;
+    }
+    
+
+  }
+
+  loadCoreMemberInfo() {
+    const token = localStorage.getItem('token');
+    this.profileService
+      .getMemberInfo(token, this.userId)
+      .subscribe((answer: MemberWithRoleInfo) => {
+        this.memberInfo = answer;
+        this.firstName.setValue(answer.firstName);
+        this.lastName.setValue(answer.lastName);
+        this.memberInfoLoaded = true;
+      });
+  }
+
+  headerTasksCounter() {
+    const token = localStorage.getItem('token');
+    this.tasksForTodayCount = this.totalTasks.data
+      .filter((task) => new Date(task.dateStart) < new Date() && task.completed < 100).length;
+    this.profileService
+      .getProjectsCount(token, this.userId)
       .subscribe((answer) => {
-        if (answer === Roles.admin || answer === Roles.projectManager) {
-          this.chartService
-            .getAllProjectsList()
-            .subscribe((projects: ProjectDropdown[]) => {
-              this.projectsDropdown = projects;
-              this.checkIfProjectsExist();
-            });
-        } else {
-          this.chartService
-            .getProjectsList(token)
-            .subscribe((projects: ProjectDropdown[]) => {
-              this.projectsDropdown = projects;
-              this.checkIfProjectsExist();
-            });
-        }
+        this.myProjectsCount = answer;
+        this.headerTasksInfoLoaded = true;
       });
-
-    if (this.projectId) {
-      this.loadWorkingHours(this.projectId);
-    }
   }
 
-  checkIfProjectsExist() {
-    if (this.projectsDropdown.length && !this.projectId) {
-      this.loadGanttData(this.projectsDropdown[0].projectId);
-    }
+  loadTasksInProgress(tasks: DisplayedTasks[]) {
+    this.tasksInProgress = new MatTableDataSource(tasks.filter(task => task.completed > 0 && task.completed < 100));
+    this.tasksInProgress.sort = this.sortProgress;
+    this.tasksInProgressLoaded = true;
+    this.tasksInProgress.sortingDataAccessor = (item, property) => {
+      switch (property) {
+        case 'taskName': {
+          return item.taskName.length;
+        }
+        case 'projectName': {
+          return item.project.projectName.length;
+        }
+        default: {
+          return item[property];
+        }
+      }
+    };
   }
 
-  loadGanttData(projectId: number) {
-    this.projectId = projectId;
-    this.loadWorkingHours(projectId);
+  doubleClick(index: number, taskId: number) {
+    const item = this.totalTasks.data
+      .find(task => task.taskId === taskId);
+    this.currentPercentValue = item.completed;
+    this.currentRowIndex = index;
   }
 
-  loadWorkingHours(projectId: number) {
+  saveEditCell(taskId: number, inputValue: number) {
+    const editTask: EditTaskModel = {
+      taskId,
+      field: 'completed',
+      value: inputValue,
+      assignedId: 1
+    };
     this.tableService
-      .getAvailableWorkingHoursProject(projectId)
-      .subscribe((answer: number) => {
-        if (answer <= 0) {
-          this.availableWorkingHours = 8;
-          this.noDevelopersOnProject = true;
-        } else {
-          this.availableWorkingHours = answer;
+      .editTask(editTask)
+      .subscribe((answer: DefaultServerMessage) => {
+        this.openAlert(answer.error ? answer.errorMessage : 'Task was edited successfully', answer.error, 2500);
+        if (!answer.error) {
+          const totalIndex = this.totalTasks.data.findIndex(task => task.taskId === taskId);
+          this.totalTasks.data[totalIndex].completed = inputValue;
+          this.tasksInProgress.data = this.totalTasks.data.filter(item => item.completed > 0 && item.completed < 100);
+          this.newTasks.data = this.totalTasks.data.filter(item => item.completed === 0);
+          this.headerTasksCounter();
+          this.cancelEditCell();
         }
-        this.initialData();
       });
   }
 
-  countTaskFiels(tasks: Task[]) {
-    const convertedTasks = [];
-    const startDateValidator = new Date(tasks[0].dateStart);
-    startDateValidator.setDate(startDateValidator.getDate() + GetCountTaskFields.checkWeekend(startDateValidator));
-    let startDate = this.datePipe.transform(startDateValidator, 'yyyy-MM-dd');
-    const tmpDate = startDate;
-    let start = true;
-    let availableDayHours = this.availableWorkingHours;
-    tasks.forEach(task => {
-      const pertAndRealTime = GetCountTaskFields
-        .countTaskFields(task.optimisticTime, task.pessimisticTime);
-      const recountDate = GetCountTaskFields
-        .getNextAvailableDay(startDate, availableDayHours, this.availableWorkingHours, pertAndRealTime.pert);
-      availableDayHours = recountDate.availableHoursCurrentDay;
-      convertedTasks.push({
-        pID: task.taskId,
-        pName: task.taskName,
-        pRes: task.user ? `${task.user.firstName} ${task.user.lastName || ''}` : 'Unassigned',
-        pStart: start ? tmpDate : startDate,
-        pClass: 'gtaskgreen',
-        pEnd: this.datePipe.transform(recountDate.endDate, 'yyyy-MM-dd'),
-        pComp: task.completed,
+  cancelEditCell() {
+    this.currentRowIndex = null;
+  }
+
+  loadNewTasks(tasks: DisplayedTasks[]) {
+    this.newTasks = new MatTableDataSource(tasks.filter(task => task.completed === 0));
+    this.newTasks.sort = this.sortNew;
+    this.newTasksLoaded = true;
+    this.newTasks.sortingDataAccessor = (item, property) => {
+      switch (property) {
+        case 'taskName': {
+          return item.taskName.length;
+        }
+        case 'projectName': {
+          return item.project.projectName.length;
+        }
+        default: {
+          return item[property];
+        }
+      }
+    };
+  }
+
+  loadTotalTasks(tasks: DisplayedTasks[]) {
+    this.totalTasks = new MatTableDataSource(tasks);
+    this.headerTasksCounter();
+    this.totalTasks.paginator = this.pagTotal;
+    this.totalTasks.sort = this.sortTotal;
+    this.totalTasksLoaded = true;
+    this.totalTasks.sortingDataAccessor = (item, property) => {
+      switch (property) {
+        case 'taskName': {
+          return item.taskName.length;
+        }
+        case 'projectName': {
+          return item.project.projectName.length;
+        }
+        default: {
+          return item[property];
+        }
+      }
+    };
+  }
+
+  loadTasks() {
+    const token = localStorage.getItem('token');
+    this.profileService
+      .getTasks(token, this.userId)
+      .subscribe((answer: Task[]) => {
+        const tasks: DisplayedTasks[] = [];
+        answer.forEach((task) => {
+          const pertAndRealTime = GetCountTaskFields
+            .countTaskFields(task.optimisticTime, task.pessimisticTime);
+          tasks.push({
+            taskId: task.taskId,
+            project: task.project,
+            taskName: task.taskName,
+            dateStart: task.dateStart,
+            completed: task.completed,
+            realTime: pertAndRealTime.realTime,
+            pert: pertAndRealTime.pert
+          });
+        });
+        this.loadTotalTasks(tasks);
+        this.loadNewTasks(tasks);
+        this.loadTasksInProgress(tasks);
       });
-      startDate = this.datePipe.transform(recountDate.nextTaskStartDate, 'yyyy-MM-dd');
-      start = false;
+  }
+
+  openDialog(templateRef) {
+    this.dialog.open(templateRef, {
+      width: '410px',
     });
-    return convertedTasks;
   }
 
-  exportPdf() {
-    const data = document.getElementById('gantt');
-    const container = document.getElementById('gantt-container');
-    html2canvas(data).then(canvas => {
-      const contentDataURL = canvas.toDataURL('image/png');
-      const width = container.offsetWidth;
-      const height = container.offsetHeight;
-      const pdf = new jspdf('l', 'cm', [width, height]);
-      pdf.addImage(contentDataURL, 'PNG', 0, 0, pdf.internal.pageSize.getWidth(), pdf.internal.pageSize.getHeight());
-      pdf.save(`${this.projectsDropdown.find(elem => elem.projectId === this.projectId).projectName}.pdf`);
-      window.history.back();
+  openAlert(message: string, isError: boolean, duration: number) {
+    this.alert.openFromComponent(AlertComponent, {
+      duration,
+      panelClass: isError ? ['alert-danger'] : ['alert-success'],
+      data: {
+        isError,
+        message
+      }
     });
   }
 
-  initialData() {
-    this.chartService
-      .getTasks(this.projectId)
-      .subscribe((tasks: Task[]) => {
-        if (!tasks.length) {
-          this.hidden = true;
-          return;
-        }
-        this.data = this.countTaskFiels(tasks);
-        this.editorOptions = {
-          vFormat: 'day'
-        };
-        this.hidden = false;
-        if (this.export) {
-          setTimeout(() => {
-            this.exportPdf();
-          }, 100);
+  myUploader(event) {
+    this.imageChangedEvent = event;
+  }
+
+  imageCropped(event: ImageCroppedEvent) {
+    this.croppedImage = event.base64;
+  }
+
+  uploadCroppedImage() {
+    const token = localStorage.getItem('token');
+    const base64Image = this.croppedImage.slice(22);
+    this.profileService
+      .changeProfileAvatar(token, base64Image, this.userId)
+      .subscribe((answer) => {
+        this.openAlert(answer.error ? answer.errorMessage : 'Updated successfully', answer.error, 2500);
+        if (!answer.error) {
+          this.loadCoreMemberInfo();
+          this.dialog.closeAll();
+          this.sharedService.headerReload.emit();
         }
       });
+  }
+
+  viewGetLastName() {
+    return this.memberInfo.lastName || 'Not Set';
+  }
+
+  formatLabel(value: number) {
+    if (value >= 1000) {
+      return Math.round(value / 1000) + 'k';
+    }
+
+    return value;
+  }
+
+  viewGetFullName() {
+    if (!this.memberInfo) {
+      return 'Loading...';
+    } else {
+      return `${this.memberInfo.firstName} ${this.memberInfo.lastName || ''}`;
+    }
+  }
+
+  ngAfterViewInit() {
+    this.elementRef.nativeElement.ownerDocument.body.style.backgroundColor = 'whitesmoke';
+  }
+  ngOnDestroy() {
+    this.elementRef.nativeElement.ownerDocument.body.style.backgroundColor = '';
   }
 }
-
-
