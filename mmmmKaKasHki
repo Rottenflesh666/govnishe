@@ -1,791 +1,383 @@
-import { Component, OnInit, ViewChild, ChangeDetectorRef, ElementRef, HostListener, TemplateRef } from '@angular/core';
-import {
-  Task, UserInProject, DefaultServerMessage, DisplayedTasks,
-  EditTaskModel, Roles, TaskBlocker, BlockersOnTask, Milestone, ProjectStatus, MemberWithRoleInfo
-} from '@estimator/models';
-import { DatePipe } from '@angular/common';
-import { CdkDragDrop, moveItemInArray } from '@angular/cdk/drag-drop';
-import { MatDialog } from '@angular/material/dialog';
-import { MatSnackBar } from '@angular/material/snack-bar';
-import { MatSort } from '@angular/material/sort';
-import { MatTableDataSource } from '@angular/material/table';
-import { EstimatorTableService, GetCountTaskFields, RolesService, CreateProjectService } from '@estimator/services';
-import { NgForm, FormControl } from '@angular/forms';
-import { Router, ActivatedRoute } from '@angular/router';
-import { AlertComponent } from '../../components/alert/alert.component';
-import { SelectionModel } from '@angular/cdk/collections';
-import { TooltipPosition } from '@angular/material/tooltip';
-import * as XLSX from 'xlsx';
-import { Observable } from 'rxjs';
+const { Op } = require('sequelize');
+const jwt = require('jsonwebtoken');
+const UserProject = require('../models').userProject;
+const Task = require('../models').task;
+const TaskStatus = require('../models').taskStatus;
+const User = require('../models').user;
+const Role = require('../models').role;
+const Milestone = require('../models').milestone;
+const Project = require('../models').project;
+const Blocker = require('../models').blocker;
 
-const importTableHead = {
-  taskName: 'taskName',
-  optimsticTime: 'optimsticTime',
-  pessimisticTime: 'pessimisticTime',
+exports.check_user_project_get = (req, res) => {
+  jwt.verify(req.params.token, res.jwtKey, (err, decoded) => {
+    UserProject.findOne({
+      where: {
+        userId: decoded.subject,
+        projectId: req.params.projectId,
+      },
+    })
+      .then((userProject) => {
+        res.json(!!userProject);
+      });
+  });
 };
 
-@Component({
-  selector: 'app-estimator-table',
-  templateUrl: './estimator-table.component.html',
-  styleUrls: ['./estimator-table.component.css'],
-  providers: [EstimatorTableService, AlertComponent, RolesService, CreateProjectService, DatePipe]
-})
-
-export class EstimatorTableComponent implements OnInit {
-  filterField = new FormControl('filterField');
-  filerPlaceholder = 'Filter tasks';
-  editBlockersIdArray: number[] = [];
-  pokerPlanningDevelopersIdArray: number[] = [];
-  developers: MemberWithRoleInfo[] = [];
-  pockerSelectedTaskId: number;
-  tasks: DisplayedTasks[] = [];
-  dataSource = new MatTableDataSource<DisplayedTasks>();
-  selection = new SelectionModel<number>(true, []);
-  users: MemberWithRoleInfo[] = [];
-  errorRowNumbers: number[];
-  milestones: Milestone[] = [];
-  dragDisabled = false;
-  tasksWithAssignedUsername: DisplayedTasks[] = [];
-  projectName = '';
-  availableTaskBlockers: DisplayedTasks[] = [];
-  projectStatusList: ProjectStatus[] = [];
-  blockersChanged = false;
-  exportGantt = true;
-  postionOption: TooltipPosition = 'after';
-  position = new FormControl(this.postionOption);
-  projectStartDate: Date;
-  hiddenColumnsIndexArr: number[] = [0];
-  importContacts: any = [];
-  exportColumns: string[] = [
-    'Task Id',
-    'Milestone',
-    'Task Name',
-    'Assigned Member',
-    'Blockers',
-    'Optimistic Time',
-    'Pessimistic Time',
-    'Real Time',
-    'Pert',
-    'Start Date',
-    'End Date',
-    'Completed %'
-  ];
-  displayedColumns: string[] = [
-    'select',
-    'taskId',
-    'milestoneId',
-    'taskName',
-    'assignedId',
-    'blockedBy',
-    'optimisticTime',
-    'pessimisticTime',
-    'realTime',
-    'pert',
-    'dateStart',
-    'endStart',
-    'completed'
-  ];
-  tableLoaded = false;
-  projectId: number;
-  currentRowIndex = -1;
-  currentColumn = '';
-  coreLength = 0;
-  sortedLength = 0;
-  noDevelopersOnProject = false;
-  extendedFunctionality = false;
-  availableWorkingHours: number;
-  assignedMilestoneId: number;
-  assignedUserId: number;
-  myControl = new FormControl();
-  filteredOptions: Observable<string[]>;
-  private readonly pockerDialogWidth = '420px';
-
-  @ViewChild(MatSort, { static: true }) sort: MatSort;
-  @ViewChild('importOverrideTaskName') importOverrideTaskName: ElementRef;
-
-  @HostListener('window:resize', ['$event'])
-  onResize(event) {
-    if (window.innerWidth <= 700) {
-      this.dragDisabled = true;
-    } else {
-      this.dragDisabled = false;
-    }
-  }
-
-  constructor(
-    private tableService: EstimatorTableService,
-    private dialog: MatDialog,
-    private route: ActivatedRoute,
-    private router: Router,
-    private alert: MatSnackBar,
-    private createProjectService: CreateProjectService,
-    private roleService: RolesService,
-    private datePipe: DatePipe,
-    private ref: ChangeDetectorRef,
-    private el: ElementRef) {
-
-  }
-
-  ngOnInit() {
-    if (window.innerWidth <= 700) {
-      this.dragDisabled = true;
-    }
-    this.projectId = +this.route.snapshot.paramMap.get('projectId');
-    if (!this.projectId) {
-      this.router.navigateByUrl('not-found');
-    }
-    this.loadRoleFunctionality();
-  }
-
-  loadData() {
-    this.loadWorkingHours(this.projectId);
-    this.loadMilestones(this.projectId);
-    this.getProjectName(this.projectId);
-    this.loadProjectStatusList();
-  }
-
-  loadProjectStatusList() {
-    this.createProjectService
-      .getProjectStatusList()
-      .subscribe(projectStatusList => {
-        this.projectStatusList = projectStatusList;
-      });
-  }
-
-  loadMilestones(projectId: number) {
-    this.tableService
-      .getMilestones(projectId)
-      .subscribe((answer: Milestone[]) => {
-        this.milestones = answer;
-      });
-  }
-
-  loadWorkingHours(projectId: number) {
-    this.tableService
-      .getAvailableWorkingHoursProject(projectId)
-      .subscribe((answer: number) => {
-        if (answer <= 0) {
-          this.availableWorkingHours = 8;
-          this.noDevelopersOnProject = true;
-        } else {
-          this.availableWorkingHours = answer;
-        }
-        this.getUsersInProject(this.projectId);
-      });
-  }
-
-  getUsersInProject(projectId: number) {
-    this.tableService
-      .getUsersByProjectId(projectId)
-      .subscribe((users: MemberWithRoleInfo[]) => {
-        this.users = users;
-        this.developers = users.filter(user => user.role.roleName === Roles.developer);
-        this.getTasks(this.projectId);
-      });
-  }
-
-  getAssignedUser(assignedId: number) {
-    if (!assignedId) {
-      return 'Assign';
-    } else {
-      const user = this.users.find(userInfo => userInfo.userId === assignedId);
-      const username = `${user.firstName} ${user.lastName ? user.lastName : ''}`;
-      return username;
-    }
-  }
-
-  checkUser() {
-    const userProject: UserInProject = {
-      token: localStorage.getItem('token'),
-      projectId: this.projectId
-    };
-
-    this.tableService
-      .checkUserInProject(userProject)
-      .subscribe((answer) => {
-        if (answer) {
-          this.loadData();
-        } else {
-          this.router.navigateByUrl('not-found');
-        }
-      });
-  }
-
-  getTasksWithoutCycleDependency(currentTaskId: number) {
-    let tasksWithoutCurrent = this.tasksWithAssignedUsername.filter(task => task.taskId !== currentTaskId);
-    tasksWithoutCurrent = tasksWithoutCurrent.filter((task) => {
-      const currentTaskBlocks = task.taskBlockers.find(blocker => blocker.taskBlockerId === currentTaskId);
-      return currentTaskBlocks ? false : true;
+exports.get_users_by_projectId = (req, res) => {
+  Project.findByPk(req.params.projectId, {
+    include: {
+      model: User,
+      attributes: [
+        'userId',
+        'firstName',
+        'lastName',
+      ],
+      include: {
+        model: Role,
+        attributes: ['roleName'],
+      },
+    },
+  })
+    .then((usersProject) => {
+      res.json(usersProject.users);
+    })
+    .catch((err) => {
+      throw err.message;
     });
-    return tasksWithoutCurrent;
-  }
+};
 
-  loadBlockersInput(blockers: TaskBlocker[]) {
-    this.editBlockersIdArray = [];
-    blockers.forEach((blocker) => {
-      this.editBlockersIdArray.push(blocker.taskBlockerId);
-    });
-  }
-
-  loadRoleFunctionality() {
-    this.roleService
-      .getRoleName()
-      .subscribe((answer) => {
-        if (answer === Roles.admin || answer === Roles.projectManager) {
-          this.extendedFunctionality = true;
-          this.loadData();
-        } else {
-          this.checkUser();
-        }
+exports.delete_tasks_post = (req, res) => {
+  // req.body contains tasks id array (multiple delete here)
+  Task.destroy({
+    where: {
+      taskId: req.body,
+    },
+  })
+    .then(() => {
+      res.json({
+        error: false,
       });
-  }
-
-  doubleClick(index: number, currentColumn: string, taskId: number) {
-    if (!this.extendedFunctionality) {
-      return;
-    }
-    if (currentColumn === 'dateStart' && index !== 0) {
-      return;
-    }
-    this.el.nativeElement
-      .querySelector('#table')
-      .removeAttribute('cdkDropList');
-    const dataSourceIndex = this.dataSource.data.findIndex(element => element.taskId === taskId);
-    if (currentColumn === 'assignedId') {
-      this.assignedUserId = this.dataSource.data[dataSourceIndex].assignedId;
-    }
-    if (currentColumn === 'milestoneId') {
-      this.assignedMilestoneId = this.dataSource.data[dataSourceIndex].milestoneId;
-    }
-    this.currentRowIndex = index;
-    this.currentColumn = currentColumn;
-    if (currentColumn === 'blockedBy') {
-      this.availableTaskBlockers = this.getTasksWithoutCycleDependency(this.dataSource.data[dataSourceIndex].taskId);
-    }
-  }
-
-  buildBlockersToAttach(taskId: number) {
-    const blockersToAttach: TaskBlocker[] = [];
-    this.editBlockersIdArray.forEach((blockerId) => {
-      blockersToAttach.push({
-        taskId,
-        taskBlockerId: blockerId
+    })
+    .catch((err) => {
+      res.json({
+        error: true,
+        errorMessage: err.message,
       });
     });
-    return blockersToAttach;
-  }
+};
 
-  blockersChangesChecker() {
-    this.blockersChanged = true;
-  }
-
-  getBlockerName(blockerId: number) {
-    return this.tasksWithAssignedUsername[this.tasksWithAssignedUsername.findIndex(task => task.taskId === blockerId)].taskName;
-  }
-
-  saveBlockers(taskId: number) {
-    if (!this.blockersChanged) {
-      this.cancelEditCell();
-      return;
-    }
-    const blockerBody: BlockersOnTask = {
-      taskId,
-      blockersId: this.editBlockersIdArray
-    };
-    this.tableService.editBlockersOnTask(blockerBody).subscribe((answer) => {
-      this.openAlert(answer.error ? answer.errorMessage : 'Blockers edited successfully', answer.error, 2500);
-      if (!answer.error) {
-        const taskIndex = this.tasksWithAssignedUsername.findIndex(task => task.taskId === taskId);
-        this.tasksWithAssignedUsername[taskIndex].taskBlockers = this.buildBlockersToAttach(taskId);
-        this.cancelEditCell();
-      }
-    });
-  }
-
-  datesRecounter(): Task[] {
-    const updateTasksArr: Task[] = [];
-    const startDateValidator = new Date(this.dataSource.data[0].dateStart);
-    startDateValidator.setDate(startDateValidator.getDate() + GetCountTaskFields.checkWeekend(startDateValidator));
-    let startDate = this.datePipe.transform(startDateValidator, 'yyyy-MM-dd');
-    let availableDayHours = this.availableWorkingHours;
-    this.dataSource.data.forEach((task, index) => {
-      this.dataSource.data[index].dateStart = startDate;
-      const recountDate = GetCountTaskFields.getNextAvailableDay(startDate, availableDayHours, this.availableWorkingHours, task.pert);
-      this.dataSource.data[index].endStart = this.datePipe.transform(recountDate.endDate, 'yyyy-MM-dd');
-      availableDayHours = recountDate.availableHoursCurrentDay;
-      startDate = this.datePipe.transform(recountDate.nextTaskStartDate, 'yyyy-MM-dd');
-      updateTasksArr.push({
-        taskId: task.taskId,
-        dateStart: task.dateStart,
-        endStart: index === 0 || index === this.dataSource.data.length - 1 ? task.endStart : null,
-        projectId: this.projectId
+exports.create_inserted_tasks = (req, res) => {
+  Task.bulkCreate(req.body, {
+    fields: [
+      'taskName',
+      'optimisticTime',
+      'pessimisticTime',
+      'dateStart',
+      'projectId',
+      'taskOrder',
+      'completed',
+      'taskStatusId',
+    ],
+  })
+    .then(() => {
+      res.json({
+        error: false,
+      });
+    })
+    .catch((err) => {
+      res.json({
+        error: true,
+        errorMessage: err.message,
       });
     });
-    return updateTasksArr;
-  }
-
-  recountFields(arrIndex: number) {
-    const element = this.dataSource.data[arrIndex];
-    const recountedFields = GetCountTaskFields
-      .countTaskFields(element.optimisticTime, element.pessimisticTime);
-    element.realTime = recountedFields.realTime;
-    element.pert = recountedFields.pert;
-    this.dataSource.data[arrIndex] = element;
-    this.datesRecounter();
-  }
-
-  projectStatusAnalyzer(alertNeeded: boolean) {
-    const completedTaskPercent = 100;
-    if (!this.dataSource.data.length) {
-      const statusId = this.projectStatusList.find(status => status.projectStatusName === 'Pending').projectStatusId;
-      this.tableService
-        .updateProjectStatus(statusId, this.projectId)
-        .subscribe((answer) => {
-          if (answer.error) {
-            this.openAlert(answer.errorMessage, answer.error, 2500);
-          }
-        });
-    } else if (!this.dataSource.data.filter(task => task.completed < completedTaskPercent).length) {
-      const statusId = this.projectStatusList.find(status => status.projectStatusName === 'Completed').projectStatusId;
-      this.tableService
-        .updateProjectStatus(statusId, this.projectId)
-        .subscribe((answer) => {
-          const statusUpdatedStr = 'Project Status now Completed';
-          if (alertNeeded) {
-            this.openAlert(answer.error ? answer.errorMessage : statusUpdatedStr, answer.error, 2500);
-          }
-        });
-    } else {
-      const statusId = this.projectStatusList.find(status => status.projectStatusName === 'In progress').projectStatusId;
-      this.tableService
-        .updateProjectStatus(statusId, this.projectId)
-        .subscribe((answer) => {
-          if (alertNeeded) {
-            this.openAlert(answer.error ? answer.errorMessage : 'Task was edited successfully', answer.error, 2500);
-          }
-        });
-    }
-  }
-
-  completedEditSave(taskId: number, inputValue: number) {
-    this.saveEditCell(taskId, `${inputValue}`);
-  }
-
-  saveEditCell(taskId: number, inputValue: string) {
-    if (!inputValue &&
-      this.currentColumn !== 'assignedId' &&
-      this.currentColumn !== 'milestoneId' &&
-      this.currentColumn !== 'completed') {
-      this.openAlert('You cant save empty field!', true, 2500);
-      return;
-    }
-
-    const index = this.dataSource.data.findIndex(element => element.taskId === taskId);
-    switch (this.currentColumn) {
-      case 'taskName':
-        if (!!this.dataSource.data.filter(task => task.taskName === inputValue).length) {
-          this.openAlert('Task with same name already exist!', true, 2500);
-          return;
-        }
-        this.dataSource.data[index].taskName = inputValue;
-        break;
-      case 'milestoneId':
-        const milestoneId = inputValue ? +inputValue : null;
-        if (!milestoneId) {
-          this.dataSource.data[index].milestone = null;
-        } else {
-          this.dataSource.data[index].milestone = this.milestones.find(item => item.id === +inputValue);
-        }
-        this.dataSource.data[index].milestoneId = milestoneId;
-        break;
-      case 'optimisticTime':
-        this.dataSource.data[index].optimisticTime = +inputValue;
-        this.recountFields(index);
-        break;
-      case 'assignedId':
-        const assignedUserId = inputValue ? +inputValue : null;
-        const assignedUser = this.getAssignedUser(inputValue ? +inputValue : null);
-        this.dataSource.data[index].assignedId = assignedUserId;
-        this.dataSource.data[index].username = assignedUser;
-        break;
-      case 'pessimisticTime':
-        this.dataSource.data[index].pessimisticTime = +inputValue;
-        this.recountFields(index);
-        break;
-      case 'dateStart':
-        this.dataSource.data[index].dateStart = inputValue;
-        this.recountFields(index);
-        break;
-      case 'completed':
-        /*each task cannot be completed more than 100 therefore completedTask is used*/
-        const completedTask = 100;
-        if (+inputValue <= completedTask) {
-          this.dataSource.data[index].completed = +inputValue;
-        }
-        break;
-    }
-    const editTask: EditTaskModel = {
-      taskId,
-      field: this.currentColumn,
-      value: inputValue,
-      assignedId: this.dataSource.data[index].assignedId
-    };
-    const statusAnalyzerNeeded = this.currentColumn === 'completed' ? true : false;
-
-    this.tableService
-      .editTask(editTask)
-      .subscribe((answer: DefaultServerMessage) => {
-        if (!statusAnalyzerNeeded) {
-          this.openAlert(answer.error ? answer.errorMessage : 'Task was edited successfully', answer.error, 2500);
-        }
-        if (!answer.error && statusAnalyzerNeeded) {
-          this.projectStatusAnalyzer(true);
-        }
-      });
-    this.cancelEditCell();
-  }
-
-  cancelEditCell() {
-    this.blockersChanged = false;
-    this.currentRowIndex = -1;
-    this.currentColumn = '';
-  }
-
-  convertTasksToDisplayFormat(tasks: Task[]) {
-    this.tasks = [];
-    this.tasksWithAssignedUsername = [];
-    const startDateValidator = new Date(tasks[0].dateStart);
-    startDateValidator.setDate(startDateValidator.getDate() + GetCountTaskFields.checkWeekend(startDateValidator));
-    let startDate = this.datePipe.transform(startDateValidator, 'yyyy-MM-dd');
-    const tmpDate = startDate;
-    let start = true;
-    let availableDayHours = this.availableWorkingHours;
-    tasks.forEach(task => {
-      const pertAndRealTime = GetCountTaskFields
-        .countTaskFields(task.optimisticTime, task.pessimisticTime);
-      const recountDate = GetCountTaskFields
-        .getNextAvailableDay(startDate, availableDayHours, this.availableWorkingHours, pertAndRealTime.pert);
-      availableDayHours = recountDate.availableHoursCurrentDay;
-      this.tasksWithAssignedUsername.push({
-        taskId: task.taskId,
-        taskName: task.taskName,
-        assignedId: task.assignedId,
-        optimisticTime: task.optimisticTime,
-        pessimisticTime: task.pessimisticTime,
-        dateStart: start ? tmpDate : startDate,
-        endStart: this.datePipe.transform(recountDate.endDate, 'yyyy-MM-dd'),
-        realTime: pertAndRealTime.realTime,
-        pert: pertAndRealTime.pert,
-        completed: task.completed,
-        taskOrder: task.taskOrder,
-        taskBlockers: task.taskBlockers,
-        milestone: task.milestone,
-        milestoneId: task.milestoneId,
-        username: this.getAssignedUser(task.assignedId)
-      });
-      startDate = this.datePipe.transform(recountDate.nextTaskStartDate, 'yyyy-MM-dd');
-      start = false;
-    });
-  }
-
-  onCreatePockerPlanningFormSubmit(form: NgForm) {
-    if (form.invalid) {
-      return;
-    }
-    // Form submit logic goes here
-  }
-
-  getTotalCost(field: string) {
-    switch (field) {
-      case 'optimisticTime':
-        return this.dataSource.data.map(t => t.optimisticTime).reduce((acc, value) => acc + value, 0);
-      case 'pessimisticTime':
-        return this.dataSource.data.map(t => t.pessimisticTime).reduce((acc, value) => acc + value, 0);
-      case 'realTime':
-        return this.dataSource.data.map(t => t.realTime).reduce((acc, value) => acc + value, 0);
-      case 'pert':
-        return this.dataSource.data.map(t => t.pert).reduce((acc, value) => acc + value, 0);
-    }
-  }
-
-  onOptionClick(index: number) {
-    const indexExist = this.hiddenColumnsIndexArr.findIndex(item => item === index);
-    if (indexExist === -1) {
-      this.hiddenColumnsIndexArr.push(index);
-    } else {
-      this.hiddenColumnsIndexArr.splice(indexExist, 1);
-    }
-    this.ref.detectChanges();
-  }
-
-  onDeleteTasks() {
-    if (!this.selection.selected.length) {
-      this.openAlert('First, select tasks to delete', true, 2500);
-      return;
-    }
-    this.tableService
-      .deleteTasks(this.selection.selected)
-      .subscribe((answer: DefaultServerMessage) => {
-        const oneOrMore = this.selection.selected.length === 1 ? 'Task' : 'Tasks';
-        if (!answer.error) {
-          this.getTasks(this.projectId);
-        }
-        this.openAlert(answer.error ? answer.errorMessage : `${oneOrMore} deleted successfully`, answer.error, 2500);
-      });
-  }
-
-  getProjectName(projectId: number) {
-    this.tableService
-      .getProjectName(projectId)
-      .subscribe((projectName) => {
-        this.projectName = projectName;
-      });
-  }
-
-  exportHandler(exporter: any, fileType: string, projectName: string) {
-    exporter.exportTable(fileType, { fileName: projectName });
-    this.dialog.closeAll();
-    if (this.exportGantt) {
-      this.router.navigateByUrl(`estimate-chart/${this.projectId}/1`);
-    }
-  }
-
-  getTasks(projectId: number) {
-    this.tableService
-      .getTasks(projectId)
-      .subscribe((tasks) => {
-        if (tasks.length) {
-          this.convertTasksToDisplayFormat(tasks);
-        } else {
-          this.tasksWithAssignedUsername = [];
-        }
-        this.dataSource = new MatTableDataSource(this.tasksWithAssignedUsername);
-        this.selection = new SelectionModel<number>(true, []);
-        this.dataSource.sort = this.sort;
-        this.dataSource.sortingDataAccessor = (item, property) => {
-          switch (property) {
-            case 'blockedBy': {
-              return item.taskBlockers.length;
-            }
-            default: {
-              return item[property];
-            }
-          }
-        };
-        this.ref.detectChanges();
-        this.filterField.setValue('');
-        this.projectStatusAnalyzer(false);
-        this.coreLength = this.dataSource.data.length;
-        this.sortedLength = this.coreLength;
-        this.tableLoaded = true;
-      });
-  }
-
-  isAllSelected() {
-    const numSelected = this.selection.selected.length;
-    const numRows = this.dataSource.data.length;
-    return numSelected === numRows;
-  }
-
-  masterToggle() {
-    this.cancelEditCell();
-    this.isAllSelected() ?
-      this.selection.clear() :
-      this.dataSource.data.forEach(row => this.selection.select(row.taskId));
-  }
-
-  checkboxLabel(row?: DisplayedTasks): string {
-    if (!row) {
-      return `${this.isAllSelected() ? 'select' : 'deselect'} all`;
-    }
-    return `${this.selection.isSelected(row.taskId) ? 'deselect' : 'select'} row `;
-  }
-
-  onChartClick() {
-    this.router.navigateByUrl(`estimate-chart/${this.projectId}`);
-  }
-
-  applyFilter(filterValue: string) {
-    this.cancelEditCell();
-    this.dataSource.filter = filterValue.trim().toLowerCase();
-    this.sortedLength = this.dataSource.filteredData.length;
-  }
-
-  openPockerPlanningDialog(templateRef) {
-    this.cancelEditCell();
-    this.pokerPlanningDevelopersIdArray = [];
-    this.pockerSelectedTaskId = null;
-    this.hiddenColumnsIndexArr = [0];
-    this.dialog.open(templateRef, {
-      width: this.pockerDialogWidth,
-    });
-  }
-
-  openDialog(templateRef) {
-    this.cancelEditCell();
-    this.hiddenColumnsIndexArr = [0];
-    this.dialog.open(templateRef, {
-      width: '410px',
-    });
-  }
-
-  openAlert(message: string, isError: boolean, duration: number) {
-    this.alert.openFromComponent(AlertComponent, {
-      duration,
-      panelClass: isError ? ['alert-danger'] : ['alert-success'],
-      data: {
-        isError,
-        message
-      }
-    });
-  }
-
-  onRecountDates() {
-    if (!this.dataSource.data.length) {
-      return;
-    }
-    const updateTasksArr: Task[] = this.datesRecounter();
-    this.tableService
-      .updateTasksStartDate(updateTasksArr)
-      .subscribe((answer: DefaultServerMessage) => {
-        if (answer.error) {
-          this.openAlert(answer.errorMessage, true, 2500);
-          this.tableLoaded = false;
-          this.loadWorkingHours(this.projectId);
-        } else {
-          this.openAlert('Saved successfully', false, 2500);
-        }
-      });
-  }
-
-  onSavePositions() {
-    let taskOrder = 1;
-    const tasksArr: Task[] = [];
-    this.dataSource.data.forEach((task) => {
-      tasksArr.push({
-        taskId: task.taskId,
-        taskOrder,
-        projectId: 1
-      });
-      this.dataSource.data[taskOrder - 1].taskOrder = taskOrder;
-      taskOrder += 1;
-    });
-    this.tableService
-      .updateTaskOrders(tasksArr)
-      .subscribe((answer) => {
-        if (!answer.error) {
-          this.onRecountDates();
-        } else {
-          this.openAlert(answer.errorMessage, answer.error, 2500);
-        }
-      });
-  }
-
-
-  onAddTaskFormSubmit(form: NgForm) {
-    if (form.invalid) {
-      return;
-    }
-    const task: Task = {
-      taskName: form.value.inputTaskName,
-      assignedId: null,
-      optimisticTime: +form.value.inputOptimisticTime,
-      pessimisticTime: +form.value.inputPessimisticTime,
-      dateStart: (new Date().toUTCString()),
-      projectId: this.projectId,
-      taskOrder: this.dataSource.data.length + 1,
-      completed: 0,
-    };
-    this.tableService
-      .addTask(task)
-      .subscribe((answer: DefaultServerMessage) => {
-        if (!answer.error) {
-          form.resetForm();
-          this.getTasks(this.projectId);
-        }
-        this.openAlert(answer.error ? answer.errorMessage : 'Task was successfully added', answer.error, 2500);
-      });
-  }
-
-  dropTable(event: CdkDragDrop<DisplayedTasks[]>) {
-    const prevIndex = this.dataSource.data.findIndex((d) => d === event.item.data);
-    moveItemInArray(this.dataSource.data, prevIndex, event.currentIndex);
-    this.dataSource.data = this.dataSource.data;
-  }
-
-  importFromFile(bstr: string): XLSX.AOA2SheetOpts {
-    const wb: XLSX.WorkBook = XLSX.read(bstr, { type: 'binary' });
-    const wsname: string = wb.SheetNames[0];
-    const ws: XLSX.WorkSheet = wb.Sheets[wsname];
-    const data = XLSX.utils.sheet_to_json(ws, { header: 1 }) as XLSX.AOA2SheetOpts;
-    return data;
-  }
-
-  clearFileInput() {
-    const input: any = document.getElementById('input-file');
-    input.value = '';
-  }
-
-  onImportFileChange(evt: any) {
-    const target: DataTransfer = evt.target as DataTransfer;
-    if (target.files.length !== 1) {
-      this.openAlert('Cant read multiple files', true, 2500);
-      this.clearFileInput();
-      return;
-    }
-    const fileName = target.files[0].name;
-    if (!fileName.endsWith('xlsx') &&
-      !fileName.endsWith('xls') &&
-      !fileName.endsWith('.csv')) {
-      this.openAlert('Invalid file format', true, 2500);
-      this.clearFileInput();
-      return;
-    }
-    const reader: FileReader = new FileReader();
-    reader.onload = (e: any) => {
-      const readPath: string = e.target.result;
-      const data = this.importFromFile(readPath) as any[];
-      const header: string[] = Object.keys(importTableHead);
-      this.errorRowNumbers = [];
-      const importedData = data.slice(1, -1);
-      this.importContacts = importedData.map((arr, index) => {
-        const obj: Task = {};
-        for (let i = 0; i < arr.length; i++) {
-          const field = header[i];
-          obj[field] = arr[i];
-        }
-        if (this.dataSource.data.find(task => task.taskName === obj.taskName) ||
-          obj.optimisticTime <= 0 || obj.pessimisticTime <= 0) {
-          this.errorRowNumbers.push(index + 1);
-        }
-        obj.dateStart = new Date().toUTCString();
-        obj.projectId = this.projectId;
-        obj.taskOrder = this.dataSource.data.length + index + 1;
-        obj.completed = 0;
-        obj.taskStatusId = 2;
-        return obj;
-      });
-      if (this.errorRowNumbers.length) {
-        const message = `Task name must be unique and time must be above zero. Check rows ${this.errorRowNumbers.join()}`;
-        this.openAlert(message, true, 4000);
-      } else {
-        this.tableService
-          .importTasks(this.importContacts)
-          .subscribe((answer: DefaultServerMessage) => {
-            this.openAlert(answer.errorMessage || 'Imported Successflly', answer.error, 2500);
-            if (!answer.error) {
-              this.tableLoaded = false;
-              this.getTasks(this.projectId);
-            }
-          });
-      }
-      this.clearFileInput();
-    };
-    reader.readAsBinaryString(target.files[0]);
-  }
-
-  viewGetMilestoneName(row: DisplayedTasks) {
-    return row.milestone ? row.milestone.name : 'Not set';
-  }
-
 }
+
+exports.create_task_put = (req, res) => {
+  Task.findOne({
+    where: {
+      [Op.and]: [
+        { taskName: req.body.taskName },
+        { projectId: req.body.projectId },
+      ],
+    },
+  })
+    .then((task) => {
+      if (task) {
+        throw new Error('Task with this name already exist!');
+      }
+    })
+    .then(() => {
+      const defaultTaskStatusId = 2;
+      return Task.create({
+        dateStart: req.body.dateStart,
+        optimisticTime: req.body.optimisticTime,
+        pessimisticTime: req.body.pessimisticTime,
+        taskName: req.body.taskName,
+        projectId: req.body.projectId,
+        completed: req.body.completed,
+        taskOrder: req.body.taskOrder,
+        taskStatusId: defaultTaskStatusId,
+      }, {
+        fields: [
+          'dateStart',
+          'optimisticTime',
+          'pessimisticTime',
+          'taskName',
+          'projectId',
+          'completed',
+          'taskOrder',
+          'taskStatusId',
+        ],
+      });
+    })
+    .then(() => {
+      res.json({
+        error: false,
+      });
+    })
+    .catch((err) => {
+      res.json({
+        error: true,
+        errorMessage: err.message,
+      });
+    });
+};
+
+function findTaskStatus(name, taskStatuses) {
+  return taskStatuses.find((taskStatus) => taskStatus.taskStatusName === name).taskStatusId;
+}
+
+function completedColumnUpdate(req, taskStatuses) {
+  let taskStatusName;
+  if (+req.body.value === 100) taskStatusName = 'closed';
+  else {
+    taskStatusName = req.body.assignedId ? 'doing' : 'backlog';
+  }
+  const taskStatusId = findTaskStatus(taskStatusName, taskStatuses);
+
+  return Task.update({
+    [req.body.field]: req.body.value,
+    taskStatusId,
+  }, {
+    where: {
+      taskId: req.body.taskId,
+    },
+  });
+}
+
+function defaultTaskUpdate(req) {
+  return Task.update({
+    [req.body.field]: req.body.value,
+  }, {
+    where: {
+      taskId: req.body.taskId,
+    },
+  });
+}
+
+exports.edit_task_post = (req, res) => {
+  TaskStatus.findAll()
+    .then((taskStatuses) => {
+      if (req.body.field === 'completed') {
+        return completedColumnUpdate(req, taskStatuses);
+      }
+      return defaultTaskUpdate(req);
+    })
+    .then(() => {
+      res.json({
+        error: false,
+      });
+    })
+    .catch((err) => {
+      res.json({
+        error: true,
+        errorMessage: err.message,
+      });
+    });
+};
+
+exports.table_get = (req, res) => {
+  Project.findByPk(req.params.projectId, {
+    order: [
+      [{ model: Task, as: 'tasks' }, 'taskOrder', 'ASC'],
+    ],
+    include: {
+      model: Task,
+      as: 'tasks',
+      include: [{
+        model: Blocker,
+        as: 'taskBlockers',
+      }, {
+        model: Milestone,
+        attributes: ['id', 'name'],
+      }],
+    },
+  })
+    .then((tasksWithBlockers) => {
+      res.json(tasksWithBlockers.tasks);
+    })
+    .catch((err) => {
+      throw err.message;
+    });
+};
+
+function insertBlockersOnTask(taskId, taskBlockersId) {
+  const bulkCreateArray = [];
+  taskBlockersId.forEach((taskBlockerId) => {
+    bulkCreateArray.push({ taskId, taskBlockerId });
+  });
+  return Blocker.bulkCreate(bulkCreateArray, {
+    fields: ['taskId', 'taskBlockerId'],
+  });
+}
+
+function deleteBlockersOnTask(taskId) {
+  return Blocker.destroy({
+    where: {
+      taskId,
+    },
+  });
+}
+
+function editBlockersOnTask(taskId, blockersId) {
+  return deleteBlockersOnTask(taskId)
+    .then(() => {
+      if (blockersId.length) {
+        return insertBlockersOnTask(taskId, blockersId);
+      }
+      return 0;
+    })
+    .catch((error) => {
+      throw error.message;
+    });
+}
+
+exports.blockers_on_task_post = (req, res) => {
+  editBlockersOnTask(req.body.taskId, req.body.blockersId)
+    .then(() => {
+      res.json({
+        error: false,
+      });
+    })
+    .catch((error) => {
+      res.json({
+        error: true,
+        errorMessage: error,
+      });
+    });
+};
+
+exports.projectName_get = (req, res) => {
+  Project.findByPk(req.params.projectId, {
+    attributes: ['projectName'],
+  })
+    .then((project) => {
+      res.json(project.projectName);
+    })
+    .catch((err) => {
+      throw err.message;
+    });
+};
+
+exports.available_working_hours_get = (req, res) => {
+  Project.findByPk(req.params.projectId, {
+    include: {
+      model: User,
+      attributes: ['workingHours'],
+      include: {
+        model: Role,
+        attributes: ['roleName'],
+      },
+    },
+  })
+    .then((projectUsers) => {
+      let workingHours = 0;
+      projectUsers.users.forEach((user) => {
+        if (user.role.roleName === 'Developer') {
+          workingHours += user.workingHours;
+        }
+      });
+      res.json(workingHours);
+    })
+    .catch((err) => {
+      throw err.message;
+    });
+};
+
+exports.switch_tasks_post = (req, res) => {
+  Task.bulkCreate(req.body, {
+    fields: ['taskId', 'taskOrder', 'projectId'],
+    updateOnDuplicate: ['taskOrder'],
+  })
+    .then(() => {
+      res.json({
+        error: false,
+      });
+    })
+    .catch((err) => {
+      res.json({
+        error: true,
+        errorMessage: err.message,
+      });
+    });
+};
+
+exports.update_start_date_post = (req, res) => {
+  Project.update({
+    startDate: req.body[0].dateStart,
+  }, {
+    where: {
+      projectId: req.body[0].projectId,
+    },
+  })
+    .then(() => Task.bulkCreate(req.body, {
+      fields: ['taskId', 'dateStart', 'endStart', 'projectId'],
+      updateOnDuplicate: ['dateStart', 'endStart'],
+    }))
+    .then(() => {
+      res.json({
+        error: false,
+      });
+    })
+    .catch((err) => {
+      res.json({
+        error: true,
+        errorMessage: err.message,
+      });
+    });
+};
+
+exports.milestones_get = (req, res) => {
+  Milestone.findAll({
+    where: {
+      projectId: req.params.projectId,
+    },
+  })
+    .then((milestones) => {
+      res.json(milestones);
+    })
+    .catch((err) => {
+      throw err;
+    });
+};
+
+exports.project_status_update = (req, res) => {
+  Project.update({
+    projectStatusId: req.body.statusId,
+  }, {
+    where: {
+      projectId: req.params.projectId,
+    },
+  })
+    .then(() => {
+      res.json({
+        error: false,
+      });
+    })
+    .catch((err) => {
+      res.json({
+        error: false,
+        errorMessage: err.message,
+      });
+    });
+};
