@@ -1,19 +1,377 @@
-/* eslint-disable global-require */
-module.exports = (app) => {
-  require('./login')(app);
-  require('./dashboard')(app);
-  require('./home')(app);
-  require('./registration')(app);
-  require('./estimator-table')(app);
-  require('./create-project')(app);
-  require('./header')(app);
-  require('./members')(app);
-  require('./estimate-chart')(app);
-  require('./project-settings')(app);
-  require('./user-in-project')(app);
-  require('./dashboard-statistic')(app);
-  require('./dashboard-project-statistic')(app);
-  require('./profile')(app);
-  require('./password-reset')(app);
-};
-/* eslint-enable global-require */
+import { Component, OnInit } from '@angular/core';
+import {
+  DashboardService, CheckProjectService, UsersInProjectService, RolesService,
+  Patterns, CreateProjectService
+} from '@estimator/services';
+import { AlertComponent } from '../alert/alert.component';
+import {
+  Project, DefaultServerMessage,
+  InviteUserInProject, Roles, ProjectStatus, CreateProject, User
+} from '@estimator/models';
+import { Router } from '@angular/router';
+import { DatePipe } from '@angular/common';
+import { MatDialog } from '@angular/material/dialog';
+import { MatSnackBar } from '@angular/material/snack-bar';
+import { NgForm, FormControl } from '@angular/forms';
+import { TooltipPosition } from '@angular/material/tooltip';
+
+enum formActions {
+  onCreateNew,
+  onRestore,
+  onCreateNewWithDeletePrev
+}
+
+@Component({
+  selector: 'app-dashboard',
+  templateUrl: './dashboard.component.html',
+  styleUrls: ['./dashboard.component.css'],
+  providers: [
+    DatePipe, CheckProjectService, DashboardService, UsersInProjectService,
+    AlertComponent, RolesService, DatePipe, CreateProjectService
+  ]
+})
+
+export class DashboardComponent implements OnInit {
+  filerPlaceholder = 'Filter projects';
+  emailPattern = Patterns.emailPattern;
+  hidden = true;
+  serverError = false;
+  errorMessage = '';
+  defaultProjectStatusId: number;
+  projectStatusList: ProjectStatus[] = [];
+  restoreProjectQuestion = false;
+  postionOption: TooltipPosition = 'after';
+  currentProjectManagerId: number;
+  roleName: string;
+  users: User[] = [];
+  position = new FormControl(this.postionOption);
+  dashboards: Project[] = [];
+  filteredDashboards: Project[] = [];
+  filterDashboardValue = '';
+  projectId: number;
+  projectName: string;
+  extendedFunctionality = false;
+  constructor(
+    private dashboardService: DashboardService,
+    private usersInProjectService: UsersInProjectService,
+    private router: Router,
+    private alert: MatSnackBar,
+    private datePipe: DatePipe,
+    private roleService: RolesService,
+    private createProjectService: CreateProjectService,
+    private dialog: MatDialog, ) { }
+
+  ngOnInit() {
+    const idToken = localStorage.getItem('token');
+    if (idToken === null) {
+      this.router.navigateByUrl('login');
+    } else {
+      this.dashboardService
+        .getUsersData()
+        .subscribe((answer) => {
+          this.users = answer;
+          this.getRoleName(idToken);
+        });
+    }
+  }
+
+  getRoleName(idToken: string) {
+    this.roleService
+      .getRoleName()
+      .subscribe((answer) => {
+        if (answer === Roles.admin || answer === Roles.projectManager) {
+          this.roleName = answer;
+          this.extendedFunctionality = true;
+          this.loadProjectStatusList();
+          this.getAllProjects();
+        } else {
+          this.getProjectsWhereUserExist(idToken);
+        }
+      });
+  }
+
+  onSettings(projectId: number) {
+    this.router.navigateByUrl(`project-settings/view/${projectId}`);
+  }
+
+  loadProjectStatusList() {
+    this.createProjectService
+      .getProjectStatusList()
+      .subscribe(projectStatusList => {
+        this.projectStatusList = projectStatusList;
+        projectStatusList.forEach((projectStatus) => {
+          if (projectStatus.projectStatusName.toLowerCase() === 'pending') {
+            this.defaultProjectStatusId = projectStatus.projectStatusId;
+          }
+        });
+      });
+  }
+
+  usersBuilder(usersProject: Project) {
+    const users = [];
+    usersProject.members.forEach((member) => {
+      users.push(this.users.find(user => user.userId === member.userId));
+    });
+    return users;
+  }
+
+  loadData(answer: Project[]) {
+    if (!answer.length) {
+      this.router.navigateByUrl('');
+    } else {
+      this.dashboards = answer;
+      answer.forEach((project, index) => {
+        this.dashboards[index].users = this.usersBuilder(project);
+      });
+      this.filteredDashboards = this.dashboards;
+      this.hidden = false;
+    }
+  }
+
+  userClickHandler(id: number) {
+    this.router.navigateByUrl(`profile/${id}`);
+  }
+
+  getAllProjects() {
+    this.dashboardService
+      .getAllProjects()
+      .subscribe((answer) => {
+        this.loadData(answer);
+      });
+  }
+
+  getChipBackColor(projectStatusName: string) {
+    switch (projectStatusName) {
+      case ('In progress'):
+        return { color: '#ffffff', 'background-color': '#81a33f' };
+      case ('Pending'):
+        return { 'background-color': '#ecda2b' };
+      case ('Completed'):
+        return { color: '#ffffff', 'background-color': '#0d86cc' };
+      case ('Not Started'):
+        return { color: '#ffffff', 'background-color': '#d42e26' };
+      default:
+        return { 'background-color': '#ffffff' };
+    }
+  }
+
+  onSignOut() {
+    localStorage.removeItem('token');
+    this.router.navigateByUrl('login');
+  }
+
+  answerHandler(answer: DefaultServerMessage) {
+    if (!answer.error) {
+      this.openAlert('Created successfully', false, 2500);
+      this.getAllProjects();
+    } else {
+      if (answer.status === 410) {
+        this.restoreProjectQuestion = true;
+      } else {
+        this.serverError = true;
+      }
+      this.errorMessage = answer.errorMessage;
+    }
+  }
+
+  getProjectData(form: NgForm) {
+    const idToken: string = localStorage.getItem('token');
+    return {
+      isAdmin: this.roleName === Roles.admin,
+      userIdToken: idToken,
+      projectName: form.value.inputProjectName,
+      projectStatusId: form.value.inputStatus
+    };
+  }
+
+  formClickHandler(form: NgForm, eventType: formActions) {
+    if (form.invalid) {
+      return;
+    }
+    this.restoreProjectQuestion = false;
+    this.serverError = false;
+    const createProject: CreateProject = this.getProjectData(form);
+    switch (eventType) {
+      case 0:
+        this.createProjectService
+          .createProject(createProject)
+          .subscribe((answer) => {
+            this.answerHandler(answer);
+          });
+        break;
+      case 1:
+        this.createProjectService
+          .restoreProject(createProject)
+          .subscribe((answer) => {
+            this.answerHandler(answer);
+          });
+        break;
+      case 2:
+        this.createProjectService
+          .existCreateProject(createProject)
+          .subscribe((answer) => {
+            this.answerHandler(answer);
+          });
+        break;
+    }
+  }
+
+  onRestoreClick(form: NgForm) {
+    this.formClickHandler(form, formActions.onRestore);
+  }
+
+  onCreateClick(form: NgForm) {
+    this.formClickHandler(form, formActions.onCreateNewWithDeletePrev);
+  }
+
+  onTryCreateProject(form: NgForm) {
+    this.formClickHandler(form, formActions.onCreateNew);
+  }
+
+  onCancelClick() {
+    this.dialog.closeAll();
+  }
+
+  progressBarColor(closed: number, total: number) {
+    const progress = closed / total * 100;
+    switch (true) {
+      case (progress <= 25 && progress >= 0):
+        return { width: `${progress}%`, 'background-color': 'red' };
+      case (25 < progress && progress <= 50):
+        return { width: `${progress}%`, 'background-color': 'orange' };
+      case (51 < progress && progress <= 75):
+        return { width: `${progress}%`, 'background-color': 'yellow' };
+      case (75 < progress):
+        return { width: `${progress}%`, 'background-color': 'green' };
+    }
+  }
+
+  getProjectsWhereUserExist(idToken: string) {
+    this.dashboardService
+      .getDashboardData(idToken)
+      .subscribe((answer: Project[]) => {
+        this.loadData(answer);
+      });
+  }
+
+  searchProjects(text: string): Project[] {
+    if (text.length > 0) {
+      return this.dashboards.filter(dasboard => {
+        const term = text.toLowerCase();
+        return dasboard.projectName.toLowerCase().includes(term);
+      });
+    } else {
+      return this.dashboards;
+    }
+  }
+
+  openAddUserToProjectDialog(templateRef, projectId: number, projectName: string) {
+    this.projectId = projectId;
+    this.projectName = projectName;
+    this.dialog.open(templateRef, {
+      width: '400px',
+    });
+  }
+
+  openDialog(templateRef, currentProjectManagerId?: number, projectId?: number) {
+    this.currentProjectManagerId = currentProjectManagerId;
+    this.projectId = projectId;
+    this.dialog.open(templateRef, {
+      width: '400px',
+    });
+  }
+
+  onAddUserToProjectFormSubmit(form: NgForm) {
+    if (form.invalid) {
+      return;
+    }
+    const inviterTokenId = localStorage.getItem('token');
+    const inviteUserBody: InviteUserInProject = {
+      inviterTokenId,
+      email: form.value.inputEmail,
+      createdDate: this.datePipe.transform(new Date(), 'yyyy-MM-dd'),
+      projectId: this.projectId,
+      projectName: this.projectName
+    };
+
+    this.usersInProjectService
+      .checkUserEmail(inviteUserBody)
+      .subscribe((answer: DefaultServerMessage) => {
+        this.openAlert(answer.error ? answer.errorMessage : 'User was invited', answer.error, 2500);
+        if (!answer.error) {
+          this.getAllProjects();
+        }
+      });
+  }
+
+  onLeaveProjectClick() {
+    const idToken = localStorage.getItem('token');
+    this.dashboardService
+      .leaveProject(idToken, this.currentProjectManagerId, this.projectId)
+      .subscribe((answer: DefaultServerMessage) => {
+        this.openAlert(answer.error ? answer.errorMessage : 'Left successfully', answer.error, 2500);
+        if (!answer.error) {
+          this.dialog.closeAll();
+          this.getRoleName(idToken);
+        }
+      });
+  }
+
+
+  onFilterProjects(value: string) {
+    this.filterDashboardValue = value;
+    this.filteredDashboards = this.searchProjects(value);
+  }
+
+  onCreate() {
+    this.router.navigateByUrl('create-project');
+  }
+
+  filterData(array: any, projectId: number) {
+    return array.filter((value: any) => {
+      return value.projectId !== projectId;
+    });
+  }
+
+  openAlert(message: string, isError: boolean, duration: number) {
+    this.alert.openFromComponent(AlertComponent, {
+      duration,
+      panelClass: isError ? ['alert-danger'] : ['alert-success'],
+      data: {
+        isError,
+        message
+      }
+    });
+  }
+
+  onDelete(projectId: number) {
+    const alertLifeTime = 2500;
+    this.dashboardService
+      .deleteProject(projectId)
+      .subscribe(answer => {
+        if (!answer) {
+          this.openAlert('Project deleted successfully', false, alertLifeTime);
+        } else {
+          this.openAlert('Server error', true, alertLifeTime);
+        }
+      });
+    this.dashboards = this.filterData(this.dashboards, projectId);
+    if (!this.dashboards.length) {
+      this.router.navigateByUrl('');
+
+    }
+    this.filteredDashboards = this.searchProjects(this.filterDashboardValue);
+  }
+  getDeadlineDays(project: Project) {
+    const deadline = project.total - project.live;
+    if (deadline > 0) {
+      return `Deadline in: ${deadline} days`;
+    }
+    if (deadline < 0) {
+      return 'Project overdue!';
+    }
+    if (deadline === 0) {
+      return 'Deadline today';
+    }
+  }
+}
