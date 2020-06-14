@@ -1,316 +1,151 @@
-import { Component, ElementRef, AfterViewInit, OnDestroy, OnInit, ViewChild } from '@angular/core';
-import { ActivatedRoute, Router } from '@angular/router';
-import { ProfileService, GetCountTaskFields, SharedService, EstimatorTableService, AuthServiceJwt } from '@estimator/services';
-import { MemberWithRoleInfo, Task, DisplayedTasks, EditTaskModel, DefaultServerMessage, ProfileCheck } from '@estimator/models';
-import { MatDialog } from '@angular/material/dialog';
-import { MatPaginator } from '@angular/material/paginator';
-import { MatSnackBar } from '@angular/material/snack-bar';
-import { MatSort } from '@angular/material/sort';
-import { MatTableDataSource } from '@angular/material/table';
-import { AlertComponent } from '../alert/alert.component';
-import { DatePipe } from '@angular/common';
-import { ImageCroppedEvent } from 'ngx-image-cropper';
-import { FormControl } from '@angular/forms';
+const jwt = require('jsonwebtoken');
+const User = require('../models').user;
+const Role = require('../models').role;
+const Task = require('../models').task;
+const UserProject = require('../models').userProject;
+const Project = require('../models').project;
+const Image = require('../models').image;
 
-@Component({
-  selector: 'app-profile',
-  templateUrl: './profile.component.html',
-  styleUrls: ['./profile.component.css'],
-  providers: [EstimatorTableService, ProfileService, DatePipe, AuthServiceJwt]
-})
-export class ProfileComponent implements OnInit, AfterViewInit, OnDestroy {
-  userId: number;
-  memberInfo: MemberWithRoleInfo;
-  tasksForTodayCount = 0;
-  myProjectsCount = 0;
-  headerTasksInfoLoaded = false;
-  currentRowIndex: number;
-  currentPercentValue = 0;
-  uploadActivated = false;
-  currentDate: string;
-  imageChangedEvent: any = '';
-  croppedImage: any = '';
-  mainUserInfoEditActive = false;
-  memberInfoLoaded = false;
-  totalTasksLoaded = false;
-  isProfileOwner = true;
-  newTasksLoaded = false;
-  tasksInProgressLoaded = false;
-  tempFirstName: string;
-  tempLastName: string;
-  firstName = new FormControl('');
-  lastName = new FormControl('');
-  totalTasks: MatTableDataSource<DisplayedTasks>;
-  newTasks: MatTableDataSource<DisplayedTasks>;
-  tasksInProgress: MatTableDataSource<DisplayedTasks>;
-  displayedColumns = ['projectName', 'taskName', 'dateStart', 'pert', 'completed'];
-  @ViewChild(MatPaginator, { static: true }) pagTotal: MatPaginator;
-  @ViewChild('sortTotal', { static: true }) sortTotal: MatSort;
-  @ViewChild('sortNew', { static: true }) sortNew: MatSort;
-  @ViewChild('sortProgress', { static: true }) sortProgress: MatSort;
-  constructor(
-    private elementRef: ElementRef,
-    private route: ActivatedRoute,
-    private router: Router,
-    private sharedService: SharedService,
-    private dialog: MatDialog,
-    private profileService: ProfileService,
-    private tableService: EstimatorTableService,
-    private alert: MatSnackBar,
-    private authService: AuthServiceJwt,
-    private datePipe: DatePipe
-  ) {
-  }
-
-  ngOnInit() {
-    this.userId = +this.route.snapshot.paramMap.get('id');
-    const token = localStorage.getItem('token');
-    this.profileService
-      .checkUser(token, this.userId)
-      .subscribe((answer: ProfileCheck) => {
-        if (answer.tokenError) {
-          this.authService.logout();
-        }
-        if (answer.notFound) {
-          this.router.navigateByUrl('not-found');
-        }
-        this.isProfileOwner = answer.isActiveUser;
-        console.log(this.isProfileOwner);
-        this.currentDate = this.datePipe.transform(new Date(), 'yyyy/MM/dd');
-        this.loadCoreMemberInfo();
-        this.loadTasks();
+exports.member_info_get = (req, res) => {
+  jwt.verify(req.params.idToken, res.jwtKey, (errDecode, decoded) => {
+    if (errDecode) throw errDecode;
+    const id = req.params.id;
+    User.findByPk(id, {
+      attributes: ['firstName', 'lastName', 'email'],
+      include: [{
+        model: Role,
+        attributes: ['roleName'],
+      }, {
+        model: Image,
+        attributes: ['image'],
+      }],
+    })
+      .then((user) => {
+        const resUser = user;
+        resUser.dataValues.image = user.image.image;
+        res.json(resUser);
+      })
+      .catch((err) => {
+        throw err;
       });
-  }
+  });
+};
 
-  editModeHandler(value: boolean) {
-    this.mainUserInfoEditActive = value;
-  }
-
-  activateEditMode(){
-    this.tempFirstName= this.firstName.value;
-    this.tempLastName= this.lastName.value;
-    this.editModeHandler(true);
-  }
-
-  cancelEditMode(){
-    this.firstName.setValue(this.tempFirstName);
-    this.lastName.setValue(this.tempLastName);
-    this.editModeHandler(false);
-  }
-
-  saveEditInfo(){
-    if(!this.firstName.value.length || !this.lastName.value.length){
-      return;
-    }
-    
-
-  }
-
-  loadCoreMemberInfo() {
-    const token = localStorage.getItem('token');
-    this.profileService
-      .getMemberInfo(token, this.userId)
-      .subscribe((answer: MemberWithRoleInfo) => {
-        this.memberInfo = answer;
-        this.firstName.setValue(answer.firstName);
-        this.lastName.setValue(answer.lastName);
-        this.memberInfoLoaded = true;
-      });
-  }
-
-  headerTasksCounter() {
-    const token = localStorage.getItem('token');
-    this.tasksForTodayCount = this.totalTasks.data
-      .filter((task) => new Date(task.dateStart) < new Date() && task.completed < 100).length;
-    this.profileService
-      .getProjectsCount(token, this.userId)
-      .subscribe((answer) => {
-        this.myProjectsCount = answer;
-        this.headerTasksInfoLoaded = true;
-      });
-  }
-
-  loadTasksInProgress(tasks: DisplayedTasks[]) {
-    this.tasksInProgress = new MatTableDataSource(tasks.filter(task => task.completed > 0 && task.completed < 100));
-    this.tasksInProgress.sort = this.sortProgress;
-    this.tasksInProgressLoaded = true;
-    this.tasksInProgress.sortingDataAccessor = (item, property) => {
-      switch (property) {
-        case 'taskName': {
-          return item.taskName.length;
-        }
-        case 'projectName': {
-          return item.project.projectName.length;
-        }
-        default: {
-          return item[property];
-        }
-      }
-    };
-  }
-
-  doubleClick(index: number, taskId: number) {
-    const item = this.totalTasks.data
-      .find(task => task.taskId === taskId);
-    this.currentPercentValue = item.completed;
-    this.currentRowIndex = index;
-  }
-
-  saveEditCell(taskId: number, inputValue: number) {
-    const editTask: EditTaskModel = {
-      taskId,
-      field: 'completed',
-      value: inputValue,
-      assignedId: 1
-    };
-    this.tableService
-      .editTask(editTask)
-      .subscribe((answer: DefaultServerMessage) => {
-        this.openAlert(answer.error ? answer.errorMessage : 'Task was edited successfully', answer.error, 2500);
-        if (!answer.error) {
-          const totalIndex = this.totalTasks.data.findIndex(task => task.taskId === taskId);
-          this.totalTasks.data[totalIndex].completed = inputValue;
-          this.tasksInProgress.data = this.totalTasks.data.filter(item => item.completed > 0 && item.completed < 100);
-          this.newTasks.data = this.totalTasks.data.filter(item => item.completed === 0);
-          this.headerTasksCounter();
-          this.cancelEditCell();
-        }
-      });
-  }
-
-  cancelEditCell() {
-    this.currentRowIndex = null;
-  }
-
-  loadNewTasks(tasks: DisplayedTasks[]) {
-    this.newTasks = new MatTableDataSource(tasks.filter(task => task.completed === 0));
-    this.newTasks.sort = this.sortNew;
-    this.newTasksLoaded = true;
-    this.newTasks.sortingDataAccessor = (item, property) => {
-      switch (property) {
-        case 'taskName': {
-          return item.taskName.length;
-        }
-        case 'projectName': {
-          return item.project.projectName.length;
-        }
-        default: {
-          return item[property];
-        }
-      }
-    };
-  }
-
-  loadTotalTasks(tasks: DisplayedTasks[]) {
-    this.totalTasks = new MatTableDataSource(tasks);
-    this.headerTasksCounter();
-    this.totalTasks.paginator = this.pagTotal;
-    this.totalTasks.sort = this.sortTotal;
-    this.totalTasksLoaded = true;
-    this.totalTasks.sortingDataAccessor = (item, property) => {
-      switch (property) {
-        case 'taskName': {
-          return item.taskName.length;
-        }
-        case 'projectName': {
-          return item.project.projectName.length;
-        }
-        default: {
-          return item[property];
-        }
-      }
-    };
-  }
-
-  loadTasks() {
-    const token = localStorage.getItem('token');
-    this.profileService
-      .getTasks(token, this.userId)
-      .subscribe((answer: Task[]) => {
-        const tasks: DisplayedTasks[] = [];
-        answer.forEach((task) => {
-          const pertAndRealTime = GetCountTaskFields
-            .countTaskFields(task.optimisticTime, task.pessimisticTime);
-          tasks.push({
-            taskId: task.taskId,
-            project: task.project,
-            taskName: task.taskName,
-            dateStart: task.dateStart,
-            completed: task.completed,
-            realTime: pertAndRealTime.realTime,
-            pert: pertAndRealTime.pert
+exports.check_user = (req, res) => {
+  const token = req.params.idToken;
+  const userId = req.params.userId;
+  jwt.verify(token, res.jwtKey, (errDecode, decoded) => {
+    if (errDecode) throw errDecode;
+    User.findByPk(userId, {
+      attributes: ['userId'],
+    })
+      .then((user) => {
+        if (!user) {
+          res.json({
+            error: true,
+            notFound: true,
+          })
+        } else if (decoded.subject === +userId) {
+          res.json({
+            error: false,
+            isActiveUser: true,
           });
-        });
-        this.loadTotalTasks(tasks);
-        this.loadNewTasks(tasks);
-        this.loadTasksInProgress(tasks);
-      });
-  }
-
-  openDialog(templateRef) {
-    this.dialog.open(templateRef, {
-      width: '410px',
-    });
-  }
-
-  openAlert(message: string, isError: boolean, duration: number) {
-    this.alert.openFromComponent(AlertComponent, {
-      duration,
-      panelClass: isError ? ['alert-danger'] : ['alert-success'],
-      data: {
-        isError,
-        message
-      }
-    });
-  }
-
-  myUploader(event) {
-    this.imageChangedEvent = event;
-  }
-
-  imageCropped(event: ImageCroppedEvent) {
-    this.croppedImage = event.base64;
-  }
-
-  uploadCroppedImage() {
-    const token = localStorage.getItem('token');
-    const base64Image = this.croppedImage.slice(22);
-    this.profileService
-      .changeProfileAvatar(token, base64Image, this.userId)
-      .subscribe((answer) => {
-        this.openAlert(answer.error ? answer.errorMessage : 'Updated successfully', answer.error, 2500);
-        if (!answer.error) {
-          this.loadCoreMemberInfo();
-          this.dialog.closeAll();
-          this.sharedService.headerReload.emit();
+        } else {
+          res.json({
+            error: false,
+            isActiveUser: false,
+          });
         }
+      })
+      .catch(() => {
+        res.json({
+          error: true,
+          tokenError: true,
+        });
       });
-  }
-
-  viewGetLastName() {
-    return this.memberInfo.lastName || 'Not Set';
-  }
-
-  formatLabel(value: number) {
-    if (value >= 1000) {
-      return Math.round(value / 1000) + 'k';
-    }
-
-    return value;
-  }
-
-  viewGetFullName() {
-    if (!this.memberInfo) {
-      return 'Loading...';
-    } else {
-      return `${this.memberInfo.firstName} ${this.memberInfo.lastName || ''}`;
-    }
-  }
-
-  ngAfterViewInit() {
-    this.elementRef.nativeElement.ownerDocument.body.style.backgroundColor = 'whitesmoke';
-  }
-  ngOnDestroy() {
-    this.elementRef.nativeElement.ownerDocument.body.style.backgroundColor = '';
-  }
+  });
 }
+
+exports.edit_user = (req, res) => {
+  
+}
+
+exports.tasks_get = (req, res) => {
+  jwt.verify(req.params.idToken, res.jwtKey, (errDecode, decoded) => {
+    if (errDecode) throw errDecode;
+    const id = req.params.id;
+    Task.findAll({
+      where: {
+        assignedId: id,
+      },
+      attributes: [
+        'taskId',
+        'taskName',
+        'dateStart',
+        'endStart',
+        'optimisticTime',
+        'pessimisticTime',
+        'completed',
+      ],
+      include: {
+        model: Project,
+        as: 'project',
+      },
+    })
+      .then((tasks) => {
+        res.json(tasks);
+      })
+      .catch((err) => {
+        throw err;
+      });
+  });
+};
+
+exports.set_profile_avatar_put = (req, res) => {
+  jwt.verify(req.params.idToken, res.jwtKey, (errDecode, decoded) => {
+    if (errDecode) throw errDecode;
+    const id = req.params.id;
+    Image.update({
+      image: req.body.file,
+    }, {
+      where: {
+        userId: id,
+      },
+    })
+      .then(() => {
+        res.json({
+          error: false,
+        });
+      })
+      .catch((err) => {
+        res.json({
+          error: true,
+          errorMessage: err.message,
+        });
+      });
+  });
+};
+
+exports.projects_count_get = (req, res) => {
+  jwt.verify(req.params.idToken, res.jwtKey, (errDecode, decoded) => {
+    if (errDecode) throw errDecode;
+    const id = req.params.id;
+    UserProject.count({
+      attributes: [],
+      where: {
+        userId: id,
+        '$project.deleted$': false,
+      },
+      include: {
+        model: Project,
+        attributes: [],
+      },
+    })
+      .then((count) => {
+        res.json(count);
+      })
+      .catch((err) => {
+        throw err.message;
+      });
+  });
+};
